@@ -44,6 +44,21 @@ jobs:
             echo "Patch not needed (missing, or already applied)."
           fi
 
+      # Optional second patch (JIT check + "Enable JIT" alert in the picker).
+      # Upload jit-check.patch to the repo root of the branch you run on.
+      - name: Apply JIT check patch (only if present)
+        run: |
+          if [ -f jit-check.patch ]; then
+            git config user.name "github-actions"
+            git config user.email "actions@users.noreply.github.com"
+            git apply --index jit-check.patch
+            git rm -q -f jit-check.patch
+            git commit -q -m "Add JIT check and Enable JIT alert to the app picker"
+            echo "APPLIED_PATCH=1" >> "$GITHUB_ENV"
+          else
+            echo "No jit-check.patch, skipping."
+          fi
+
       # dynarmic (the CPU core) needs the Boost headers; build.rs picks up
       # vendor/boost if it exists.
       - name: Cache Boost
