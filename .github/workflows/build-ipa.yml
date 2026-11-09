@@ -10,11 +10,19 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Select newest stable Xcode 26 (needed for the iOS 26 SDK)
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26.*.app | grep -vi -e beta -e candidate | sort -V | tail -n 1)
+          echo "Using $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i "iOS 26"
 
       - name: Rust iOS targets
         run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
