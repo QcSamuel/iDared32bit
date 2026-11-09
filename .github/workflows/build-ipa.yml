@@ -11,6 +11,10 @@ on:
 jobs:
   build:
     runs-on: macos-26
+    env:
+      # CMake 4.x refuses projects declaring cmake_minimum_required < 3.5
+      # (sdl2-sys's bundled SDL does). This tells CMake to accept them.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,6 +33,7 @@ jobs:
 
       - name: Build (no code signing)
         run: |
+          set -o pipefail
           xcodebuild \
             -project iphone/iDared32bit.xcodeproj \
             -scheme "iDared 32bit" \
@@ -39,7 +44,22 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build
+            build 2>&1 | tee xcodebuild.log
+
+      - name: Show errors (only on failure)
+        if: failure()
+        run: |
+          echo "=== error lines ==="
+          grep -n -E "error:|error\[|fatal error|BUILD FAILED|failed with exit code" xcodebuild.log | head -60
+          echo "=== last 60 lines ==="
+          tail -n 60 xcodebuild.log
+
+      - name: Upload full build log (only on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
 
       - name: Package IPA
         run: |
