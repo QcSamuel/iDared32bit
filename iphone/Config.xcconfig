@@ -18,4 +18,7 @@
 MARKETING_VERSION = 1.5.2
 CURRENT_PROJECT_VERSION = 2
 
+// The CPU core (dynarmic) is C++, so the app must link the C++ runtime.
+OTHER_LDFLAGS = $(inherited) -lc++
+
 #include? "../Local.xcconfig"

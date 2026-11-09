@@ -262,16 +262,14 @@ impl MachO {
         let (header, commands) = match file {
             OFile::MachFile { header, commands } => (header, commands),
             OFile::FatFile { files, .. } => {
-                // Prefer the newest slice the CPU core runs, as a device
-                // would: ARMv7s (the iPhone 5's, which adds VFPv4's fused
-                // multiply-accumulates, half-precision conversions and
-                // integer divide to ARMv7), then ARMv7, then ARMv6. Any
-                // other ARM slice comes last.
+                // Prefer ARMv7, then ARMv6 (what dynarmic is tested with),
+                // then ARMv7s, whose extra instructions dynarmic may not
+                // handle. Any other ARM slice comes last.
                 fn slice_rank(subtype: mach_object::cpu_subtype_t) -> u8 {
                     match subtype {
-                        mach_object::CPU_SUBTYPE_ARM_V7S => 3,
-                        mach_object::CPU_SUBTYPE_ARM_V7 => 2,
-                        mach_object::CPU_SUBTYPE_ARM_V6 => 1,
+                        mach_object::CPU_SUBTYPE_ARM_V7 => 3,
+                        mach_object::CPU_SUBTYPE_ARM_V6 => 2,
+                        mach_object::CPU_SUBTYPE_ARM_V7S => 1,
                         _ => 0,
                     }
                 }

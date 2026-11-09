@@ -8,8 +8,8 @@
 const IDARED_FORK_NOTICE: &str = "
 iDared 32bit is a fork of touchHLE, with a few differences in this build:
 
-  - CPU emulation uses an ARM interpreter derived from mGBA's (replaces
-    Dynarmic JIT)
+  - CPU emulation uses the dynarmic JIT recompiler, in the iOS-host fork
+    used by the Applesauce and HyperHLE projects
   - The guest-facing OpenAL uses SDL audio (replaces OpenAL Soft library)
 
 The maintainer (@apexad) contributed to touchHLE until this App Store
@@ -122,15 +122,14 @@ options, are used under the MIT license: the same terms as the libxml2 license
 its copyright holders.
 ";
 
-const MGBA_DESCRIPTION: &str = "
-iDared 32bit, and therefore this executable, incorporates a modified copy of
-the ARM interpreter from the mGBA Game Boy Advance emulator (in
-vendor/mgba_arm/), which this build extends from ARMv4T to ARMv7s.
-mGBA is copyright © 2013–2024 Jeffrey Pfau, and is available under the Mozilla
-Public License, version 2.0 -- the same license as the rest of this program.
-The modified source files are published with the rest of iDared 32bit's source
-code (see above). iDared 32bit is not affiliated with or endorsed by the mGBA
-project.
+const DYNARMIC_DESCRIPTION: &str = "
+iDared 32bit, and therefore this executable, incorporates the dynarmic dynamic
+recompiler (in vendor/dynarmic/), in the fork used by the Applesauce project,
+together with the libraries bundled with it (fmt, mcl, oaknut and others).
+dynarmic is copyright its authors and is available under the 0BSD license; the
+bundled libraries are available under their own permissive licenses, included
+in vendor/dynarmic/externals/. iDared 32bit is not affiliated with or endorsed
+by the dynarmic, Applesauce or HyperHLE projects.
 ";
 
 const SDL2_DESCRIPTION: &str = "
@@ -381,7 +380,7 @@ fn print(out: &mut String, resources_are_external_files: bool) -> Result<(), std
     )?;
     writeln!(out, "{}", BSD_3_CLAUSE_SUBTLE.trim_end())?;
     divider(out)?;
-    writeln!(out, "{MGBA_DESCRIPTION}")?;
+    writeln!(out, "{DYNARMIC_DESCRIPTION}")?;
     divider(out)?;
     writeln!(out, "{SDL2_DESCRIPTION}")?;
     writeln!(out, "{SDL2_LICENSE}")?;

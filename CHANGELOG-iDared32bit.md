@@ -2,6 +2,13 @@
 
 iDared 32bit is based on [touchHLE](https://touchhle.org/). This file lists only iDared 32bit's own changes. The touchHLE changes it includes are in [CHANGELOG.md](CHANGELOG.md), which is touchHLE's own changelog, kept exactly as it is upstream.
 
+## Unreleased
+
+CPU:
+
+- Replaced the ARM interpreter with the dynarmic JIT recompiler (the iOS-host fork used by Applesauce), vendored in `vendor/dynarmic/`. Games run much faster, but JIT must now be enabled for the app each time it starts (for example with StikDebug).
+- Fat binaries now prefer the ARMv7 slice, then ARMv6, then ARMv7s.
+
 ## v1.5.2 (2026-11-07)
 
 Usability:

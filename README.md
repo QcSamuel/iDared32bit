@@ -10,7 +10,7 @@ Website (including the privacy policy): <https://idared32bit-emu.com/>
 ## What's different in this build
 
 - **iOS host app** which runs as a native app on iPhone and iPad.
-- **An interpreter instead of Dynarmic** for CPU emulation. The CPU core is an ARM interpreter derived from [mGBA](https://github.com/mgba-emu/mgba)'s, extended from ARMv4T to ARMv7s, with Thumb-2, VFPv3/VFPv4 and NEON. The only code run by the [emulated CPU](vendor/mgba_arm/) is the app binary and [a handful of libraries](dylibs/).
+- **Dynarmic JIT for CPU emulation**, using the iOS-host dynarmic fork from [Applesauce](https://github.com/johnny901901901/Applesauce). JIT must be enabled for the app each time it starts (for example with StikDebug). The only code run by the emulated CPU is the app binary and [a handful of libraries](dylibs/).
 - **OpenAL via SDL Audio** for the guest-facing `OpenAL.framework` and Audio Toolbox playback, instead of the OpenAL Soft C library.
 - **Changes not in upstream touchHLE** — the maintainer ([@apexad](https://github.com/apexad)) contributed to touchHLE until this App Store release, which the touchHLE project did not want, and is no longer part of that project. This build includes changes, some originally written for touchHLE, that enable games not supported upstream.
 
@@ -53,7 +53,7 @@ Only use iDared 32bit to emulate software you have obtained legally.
 
 Not an official touchHLE release, and not affiliated with or endorsed by the touchHLE project — please direct questions or problems regarding iDared 32bit here, not to the touchHLE project.
 
-Not affiliated with or endorsed by the mGBA project, whose ARM interpreter iDared 32bit's CPU core is derived from — please direct questions or problems regarding iDared 32bit here, not to the mGBA project.
+Not affiliated with or endorsed by the dynarmic, Applesauce or HyperHLE projects — please direct questions or problems regarding iDared 32bit here, not to them.
 
 ## Graphical user interface
 
@@ -82,7 +82,7 @@ iDared 32bit is based on touchHLE. Its source code, including touchHLE's and the
 
 The app carries copies of the libgcc and libstdc++ dynamic libraries from Apple's iPhone OS SDK (`dylibs/`), which apps running inside the emulated device link against. On iOS, these copies are embedded in the app's executable file, as data. They are separate programs, licensed under the GNU GPL version 2 or later. They run only inside the emulated device, are not linked with iDared 32bit, and do not change its license. Their license notices, the full text of the GPL, and a written offer for their source code, are included in the app's license information.
 
-Copyright, authorship, and license notices for touchHLE, mGBA, and bundled components are preserved in the source and available through the app's license information. See `LICENSE`, `src/licenses.rs`, and the applicable bundled-component directories for details.
+Copyright, authorship, and license notices for touchHLE, dynarmic, and bundled components are preserved in the source and available through the app's license information. See `LICENSE`, `src/licenses.rs`, and the applicable bundled-component directories for details.
 
 ### Name, logo and app icon
 
@@ -99,7 +99,7 @@ If you distribute your own build or fork, give it its own name, logo and icon, a
 We stand on the shoulders of giants. Thank you to:
 
 * Everyone who has contributed to the project or supported any of its contributors financially.
-* The authors of and contributors to the many libraries used by this project: [mGBA](https://github.com/mgba-emu/mgba) (whose ARM interpreter core, modified, is vendored in [vendor/mgba_arm/](vendor/mgba_arm/)), [rust-macho](https://github.com/flier/rust-macho), [SDL](https://libsdl.org/), [rust-sdl2](https://github.com/Rust-SDL2/rust-sdl2), [stb\_image](https://github.com/nothings/stb), Imagination Technologies' [PVRTC decompressor](https://github.com/powervr-graphics/Native_SDK/blob/master/framework/PVRCore/texture/PVRTDecompress.cpp), [hound](https://github.com/ruuda/hound), [Symphonia](https://github.com/pdeljanov/Symphonia), [RustType](https://gitlab.redox-os.org/redox-os/rusttype), [the Liberation fonts](https://github.com/liberationfonts/liberation-fonts), [the Noto CJK fonts](https://github.com/googlefonts/noto-cjk), [rust-plist](https://github.com/ebarnard/rust-plist), [nibarchive](https://github.com/michaelwright235/nibarchive), [quick-xml](https://github.com/tafia/quick-xml), [gl-rs](https://github.com/brendanzab/gl-rs), [cargo-license](https://github.com/onur/cargo-license), [cc-rs](https://github.com/rust-lang/cc-rs), [cmake-rs](https://github.com/rust-lang/cmake-rs), [cargo-ndk](https://github.com/bbqsrc/cargo-ndk), [cargo-ndk-android-gradle](https://github.com/willir/cargo-ndk-android-gradle), [md-5 and sha1](https://github.com/RustCrypto/hashes), [encoding_rs](https://github.com/hsivonen/encoding_rs), [tiny-skia](https://github.com/linebender/tiny-skia), [corosensei](https://github.com/Amanieu/corosensei), [uuid](https://github.com/uuid-rs/uuid) and the Rust standard library.
+* The authors of and contributors to the many libraries used by this project: [dynarmic](https://github.com/merryhime/dynarmic) (vendored in [vendor/dynarmic/](vendor/dynarmic/), as the fork used by Applesauce), [rust-macho](https://github.com/flier/rust-macho), [SDL](https://libsdl.org/), [rust-sdl2](https://github.com/Rust-SDL2/rust-sdl2), [stb\_image](https://github.com/nothings/stb), Imagination Technologies' [PVRTC decompressor](https://github.com/powervr-graphics/Native_SDK/blob/master/framework/PVRCore/texture/PVRTDecompress.cpp), [hound](https://github.com/ruuda/hound), [Symphonia](https://github.com/pdeljanov/Symphonia), [RustType](https://gitlab.redox-os.org/redox-os/rusttype), [the Liberation fonts](https://github.com/liberationfonts/liberation-fonts), [the Noto CJK fonts](https://github.com/googlefonts/noto-cjk), [rust-plist](https://github.com/ebarnard/rust-plist), [nibarchive](https://github.com/michaelwright235/nibarchive), [quick-xml](https://github.com/tafia/quick-xml), [gl-rs](https://github.com/brendanzab/gl-rs), [cargo-license](https://github.com/onur/cargo-license), [cc-rs](https://github.com/rust-lang/cc-rs), [cmake-rs](https://github.com/rust-lang/cmake-rs), [cargo-ndk](https://github.com/bbqsrc/cargo-ndk), [cargo-ndk-android-gradle](https://github.com/willir/cargo-ndk-android-gradle), [md-5 and sha1](https://github.com/RustCrypto/hashes), [encoding_rs](https://github.com/hsivonen/encoding_rs), [tiny-skia](https://github.com/linebender/tiny-skia), [corosensei](https://github.com/Amanieu/corosensei), [uuid](https://github.com/uuid-rs/uuid) and the Rust standard library.
 * The [Rust project](https://www.rust-lang.org/) generally.
 * The various people out there who've documented the iPhone OS platform, officially or otherwise. Much of this documentation is linked to within this codebase!
 * The iOS hacking/jailbreaking community.
