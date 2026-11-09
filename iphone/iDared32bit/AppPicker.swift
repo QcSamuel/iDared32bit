@@ -204,6 +204,51 @@ private func addQuestionMark(_ icon: UIImage) -> UIImage {
     }
 }
 
+// MARK: - JIT
+
+/// Not in the public SDK, but a stable function in libSystem.
+@_silgen_name("csops")
+private func csops(
+    _ pid: pid_t, _ ops: UInt32, _ useraddr: UnsafeMutableRawPointer?, _ usersize: Int
+) -> Int32
+
+/// The CPU core (dynarmic) needs an attached debugger to hand it executable
+/// memory: it executes `brk #0xf00d` and a script in the debugger answers.
+/// With no debugger attached the trap kills the app the moment a game starts.
+enum JIT {
+    static var isEnabled: Bool {
+        // CS_DEBUGGED, set once a debugger such as StikDebug has attached.
+        var flags: UInt32 = 0
+        if csops(getpid(), 0, &flags, MemoryLayout<UInt32>.size) == 0,
+           flags & 0x1000_0000 != 0 {
+            return true
+        }
+        // P_TRACED, the older signal for the same thing.
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        if sysctl(&mib, 4, &info, &size, nil, 0) == 0 {
+            return info.kp_proc.p_flag & P_TRACED != 0
+        }
+        return false
+    }
+
+    /// Asks StikDebug to attach to this app with its universal script.
+    static var enableURL: URL? {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier else {
+            return nil
+        }
+        var components = URLComponents()
+        components.scheme = "stikdebug"
+        components.host = "enable-jit"
+        components.queryItems = [
+            URLQueryItem(name: "bundle-id", value: bundleIdentifier),
+            URLQueryItem(name: "script-name", value: "universal.js"),
+        ]
+        return components.url
+    }
+}
+
 // MARK: - Model
 
 final class PickerModel: ObservableObject {
@@ -218,6 +263,9 @@ final class PickerModel: ObservableObject {
     @Published var showingCopyright = false
     @Published var copyrightPage = 0
     @Published var showingStartError: Bool
+    /// Set when a game was tapped while JIT is off.
+    @Published var showingJITAlert = false
+    private var heldApp: Int?
     var copyrightPages: [String] = []
 
     /// The value of each of the quick options.
@@ -509,8 +557,37 @@ final class PickerModel: ObservableObject {
 
     /// Rust turns the quick option values into option arguments.
     func pick(_ app: Int) {
+        guard JIT.isEnabled else {
+            // Without JIT the app would be killed as soon as the game starts.
+            heldApp = app
+            showingJITAlert = true
+            return
+        }
+        start(app)
+    }
+
+    private func start(_ app: Int) {
         let lines = [String(app)] + quickOptionValues.map(String.init)
         result = lines.joined(separator: "\n")
+    }
+
+    func startHeldApp() {
+        if let app = heldApp {
+            start(app)
+        }
+        heldApp = nil
+    }
+
+    func cancelHeldApp() {
+        heldApp = nil
+        pressedApp = nil
+    }
+
+    func enableJIT() {
+        cancelHeldApp()
+        if let url = JIT.enableURL {
+            UIApplication.shared.open(url)
+        }
     }
 
     func open(_ url: String?) {
@@ -818,6 +895,22 @@ struct PickerView: View {
             }
             .sheet(isPresented: $model.showingSettings) {
                 SettingsView(model: model)
+            }
+            .alert("JIT Isn’t Enabled", isPresented: $model.showingJITAlert) {
+                Button("Enable JIT") {
+                    model.enableJIT()
+                }
+                Button("Start Anyway", role: .destructive) {
+                    model.startHeldApp()
+                }
+                Button("Cancel", role: .cancel) {
+                    model.cancelHeldApp()
+                }
+            } message: {
+                Text(
+                    "Games need JIT. Without it iDared 32bit closes the moment one starts. "
+                        + "Enable JIT in StikDebug, then start the game again."
+                )
             }
             .alert("The Game Stopped", isPresented: $model.showingStartError) {
                 Button("OK", role: .cancel) {}

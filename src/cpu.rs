@@ -162,6 +162,7 @@ impl Cpu {
             .map_or(std::ptr::null_mut(), |mem| unsafe {
                 mem.direct_memory_access_ptr()
             });
+        echo!("CPU core: dynarmic JIT");
         let dynarmic_wrapper =
             unsafe { touchHLE_DynarmicWrapper_new(direct_memory_access_ptr, null_page_count) };
         Cpu {
