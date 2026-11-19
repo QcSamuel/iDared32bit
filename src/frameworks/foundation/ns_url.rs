@@ -28,6 +28,9 @@ enum NSURLHostObject {
         // Relative file URL save the working directory at the time of creation
         // At the moment, used in the description selector.
         working_directory: GuestPathBuf,
+        /// For a URL relative to a base, the relative part (an NSString), else
+        /// nil. `ns_string` is still the whole path.
+        relative: id,
     },
     /// Non-file URL.
     OtherURL { ns_string: id },
@@ -41,7 +44,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 @implementation NSURL: NSObject
 
 + (id)allocWithZone:(NSZonePtr)_zone {
-    let host_object = NSURLHostObject::FileURL { ns_string: nil, working_directory: env.fs.working_directory().into() };
+    let host_object = NSURLHostObject::FileURL { ns_string: nil, working_directory: env.fs.working_directory().into(), relative: nil };
     env.objc.alloc_object(this, Box::new(host_object), &mut env.mem)
 }
 
@@ -73,7 +76,10 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (())dealloc {
     match *env.objc.borrow(this) {
-        NSURLHostObject::FileURL { ns_string, .. } => release(env, ns_string),
+        NSURLHostObject::FileURL { ns_string, relative, .. } => {
+            release(env, ns_string);
+            release(env, relative);
+        },
         NSURLHostObject::OtherURL { ns_string } => release(env, ns_string),
     }
     env.objc.dealloc_object(this, &mut env.mem)
@@ -96,7 +102,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     assert!(!to_rust_string(env, path).starts_with("file:"));
     let path = msg![env; path stringByExpandingTildeInPath];
     let path: id = msg![env; path copy];
-    *env.objc.borrow_mut(this) = NSURLHostObject::FileURL { ns_string: path, working_directory: env.fs.working_directory().into() };
+    *env.objc.borrow_mut(this) = NSURLHostObject::FileURL { ns_string: path, working_directory: env.fs.working_directory().into(), relative: nil };
     this
 }
 
@@ -121,7 +127,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     // TODO: Keep the relative part and the base separate, for -baseURL,
     // -relativeString and -description. This stores the resolved URL.
     let base = match *env.objc.borrow(base_url) {
-        NSURLHostObject::FileURL { ns_string, ref working_directory } => {
+        NSURLHostObject::FileURL { ns_string, ref working_directory, .. } => {
             let working_directory = working_directory.as_str().to_string();
             let path = to_rust_string(env, ns_string);
             if path.starts_with('/') {
@@ -143,6 +149,7 @@ pub const CLASSES: ClassExports = objc_classes! {
             NSURLHostObject::FileURL {
                 ns_string,
                 working_directory: env.fs.working_directory().into(),
+                relative: nil,
             }
         },
         _ => NSURLHostObject::OtherURL {
@@ -162,7 +169,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (id)description {
     match env.objc.borrow(this) {
-        NSURLHostObject::FileURL { ns_string, working_directory } => {
+        NSURLHostObject::FileURL { ns_string, working_directory, .. } => {
             let working_directory = working_directory.as_str().to_string();
             let mut description = to_rust_string(env, *ns_string).to_string().clone();
             if !description.starts_with('/') {
@@ -192,11 +199,9 @@ pub const CLASSES: ClassExports = objc_classes! {
     match *env.objc.borrow(this) {
         // FIXME: don't assume URL is already absolute
         NSURLHostObject::FileURL { ns_string, .. } => ns_string,
-        NSURLHostObject::OtherURL { ns_string } => {
-            // TODO: full RFC 1808 resolution
-            assert!(to_rust_string(env, ns_string).starts_with("http"));
-            ns_string
-        },
+        // Relative URLs are stored resolved against their base, and one
+        // without a base is its own absolute string, as on iOS.
+        NSURLHostObject::OtherURL { ns_string } => ns_string,
     }
 }
 
@@ -212,6 +217,40 @@ pub const CLASSES: ClassExports = objc_classes! {
     };
     let query = from_rust_string(env, query.to_string());
     autorelease(env, query)
+}
+
+- (id)scheme {
+    let scheme = match *env.objc.borrow(this) {
+        NSURLHostObject::FileURL { .. } => Some("file".to_string()),
+        NSURLHostObject::OtherURL { ns_string } => {
+            let url = to_rust_string(env, ns_string);
+            split_url(&url).0.map(str::to_string)
+        },
+    };
+    let Some(scheme) = scheme else {
+        return nil;
+    };
+    let scheme = from_rust_string(env, scheme);
+    autorelease(env, scheme)
+}
+
+- (id)host {
+    // File URLs made from paths never have one.
+    let &NSURLHostObject::OtherURL { ns_string } = env.objc.borrow(this) else {
+        return nil;
+    };
+    let url = to_rust_string(env, ns_string).to_string();
+    let Some(authority) = split_url(&url).1 else {
+        return nil;
+    };
+    // Without the user, password and port.
+    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = match host.strip_prefix('[') {
+        Some(ipv6) => ipv6.split(']').next().unwrap(),
+        None => host.split(':').next().unwrap(),
+    };
+    let host = from_rust_string(env, host.to_string());
+    autorelease(env, host)
 }
 
 - (id)absoluteURL {
@@ -255,6 +294,29 @@ pub const CLASSES: ClassExports = objc_classes! {
 @end
 
 };
+
+/// Shortcut for host code: a file URL for `relative` in the folder `base`
+/// (both paths), as `CFBundle` gives for resources. Retained.
+pub fn file_url_relative_to(env: &mut Environment, relative: &str, base: &str) -> id {
+    let url: id = msg_class![env; NSURL alloc];
+    let path = from_rust_string(env, format!("{base}/{relative}"));
+    let relative = from_rust_string(env, relative.to_string());
+    *env.objc.borrow_mut(url) = NSURLHostObject::FileURL {
+        ns_string: path,
+        working_directory: env.fs.working_directory().into(),
+        relative,
+    };
+    url
+}
+
+/// Shortcut for host code: the relative part of a file URL made relative to
+/// a base, if it is one.
+pub fn relative_path(env: &mut Environment, url: id) -> Option<id> {
+    match *env.objc.borrow(url) {
+        NSURLHostObject::FileURL { relative, .. } if relative != nil => Some(relative),
+        _ => None,
+    }
+}
 
 /// Shortcut for host code, provides a view of a URL as a path.
 /// TODO: Try to avoid allocating a new GuestPathBuf in more cases.

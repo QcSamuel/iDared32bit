@@ -11,6 +11,9 @@ use crate::objc::{
 };
 use std::collections::HashSet;
 
+mod unicode_categories;
+use unicode_categories::{ALPHANUMERICS, LOWERCASE_LETTERS, PUNCTUATION, UPPERCASE_LETTERS};
+
 // Unicode General Category Zs and CHARACTER TABULATION (U+0009).
 const WHITESPACE_CHARACTERS: [char; 18] = [
     '\u{0020}', '\u{00A0}', '\u{1680}', '\u{2000}', '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}',
@@ -51,6 +54,29 @@ const CONTROL_CHARACTERS: [char; 99] = [
     '\u{2064}', '\u{206A}', '\u{206B}', '\u{206C}', '\u{206D}', '\u{206E}', '\u{206F}', '\u{FEFF}',
     '\u{FFF9}', '\u{FFFA}', '\u{FFFB}',
 ];
+
+/// The code units in a table of runs from [unicode_categories].
+fn from_runs(runs: &[u16]) -> HashSet<unichar> {
+    runs.chunks(2).flat_map(|run| run[0]..=run[1]).collect()
+}
+
+/// A new (autoreleased) character set of the class with these characters.
+fn with_set(env: &mut crate::Environment, class: id, set: HashSet<unichar>) -> id {
+    let new: id = msg![env; class alloc];
+    env.objc.borrow_mut::<CharacterSetHostObject>(new).set = set;
+    autorelease(env, new)
+}
+
+/// A new (+1) character set of the class, with the same characters.
+fn copy_as(env: &mut crate::Environment, this: id, class_name: &str) -> id {
+    let old_host_object = env.objc.borrow::<CharacterSetHostObject>(this);
+    let host_object = Box::new(CharacterSetHostObject {
+        set: old_host_object.set.clone(),
+        inverted: old_host_object.inverted,
+    });
+    let class = env.objc.get_known_class(class_name, &mut env.mem);
+    env.objc.alloc_object(class, host_object, &mut env.mem)
+}
 
 /// Belongs to _touchHLE_NSCharacterSet
 struct CharacterSetHostObject {
@@ -142,6 +168,22 @@ pub const CLASSES: ClassExports = objc_classes! {
     autorelease(env, new)
 }
 
++ (id)lowercaseLetterCharacterSet {
+    with_set(env, this, from_runs(LOWERCASE_LETTERS))
+}
+
++ (id)uppercaseLetterCharacterSet {
+    with_set(env, this, from_runs(UPPERCASE_LETTERS))
+}
+
++ (id)alphanumericCharacterSet {
+    with_set(env, this, from_runs(ALPHANUMERICS))
+}
+
++ (id)punctuationCharacterSet {
+    with_set(env, this, from_runs(PUNCTUATION))
+}
+
 + (id)controlCharacterSet {
     let set = HashSet::from(CONTROL_CHARACTERS.map(|c| unichar::try_from(c).unwrap()));
 
@@ -188,7 +230,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 // NSMutableCopying implementation
 - (id)mutableCopyWithZone:(NSZonePtr)_zone {
-    todo!()
+    copy_as(env, this, "_touchHLE_NSMutableCharacterSet")
 }
 
 - (bool)characterIsMember:(unichar)code_unit {
@@ -222,11 +264,11 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 // NSCopying implementation
 - (id)copyWithZone:(NSZonePtr)_zone {
-    todo!()
+    copy_as(env, this, "_touchHLE_NSCharacterSet")
 }
 // NSMutableCopying implementation
 - (id)mutableCopyWithZone:(NSZonePtr)_zone {
-    todo!()
+    copy_as(env, this, "_touchHLE_NSMutableCharacterSet")
 }
 
 - (bool)characterIsMember:(unichar)code_unit {
@@ -234,15 +276,66 @@ pub const CLASSES: ClassExports = objc_classes! {
     host_object.set.contains(&code_unit) ^ host_object.inverted
 }
 
+- (())formUnionWithCharacterSet:(id)other { // NSCharacterSet*
+    let inverted = |env: &mut crate::Environment, set: id| {
+        env.objc.borrow::<CharacterSetHostObject>(set).inverted
+    };
+    if !inverted(env, this) && !inverted(env, other) {
+        let other_set = env.objc.borrow::<CharacterSetHostObject>(other).set.clone();
+        env.objc.borrow_mut::<CharacterSetHostObject>(this).set.extend(other_set);
+        return;
+    }
+    // With an inverted set, it's simplest to list the members.
+    let mut set = HashSet::new();
+    for c in 0..=unichar::MAX {
+        let in_this: bool = msg![env; this characterIsMember:c];
+        if in_this || msg![env; other characterIsMember:c] {
+            set.insert(c);
+        }
+    }
+    let host_object = env.objc.borrow_mut::<CharacterSetHostObject>(this);
+    host_object.set = set;
+    host_object.inverted = false;
+}
+
+- (())invert {
+    let host_object = env.objc.borrow_mut::<CharacterSetHostObject>(this);
+    host_object.inverted = !host_object.inverted;
+}
+
 - (())addCharactersInString:(id)string { // NSString *
-    assert!(!env.objc.borrow::<CharacterSetHostObject>(this).inverted); // TODO
     let length: NSUInteger = msg![env; string length];
     for i in 0..length {
         let c = msg![env; string characterAtIndex:i];
-        env.objc.borrow_mut::<CharacterSetHostObject>(this).set.insert(c);
+        let host_object = env.objc.borrow_mut::<CharacterSetHostObject>(this);
+        // An inverted set lists the characters it doesn't have.
+        if host_object.inverted {
+            host_object.set.remove(&c);
+        } else {
+            host_object.set.insert(c);
+        }
     }
 }
 
 @end
 
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unicode_category_sets() {
+        let has = |runs: &[u16], c: char| from_runs(runs).contains(&(c as unichar));
+        assert!(has(LOWERCASE_LETTERS, 'a') && has(LOWERCASE_LETTERS, 'ß'));
+        assert!(!has(LOWERCASE_LETTERS, 'A') && !has(LOWERCASE_LETTERS, '1'));
+        assert!(has(UPPERCASE_LETTERS, 'Z') && has(UPPERCASE_LETTERS, 'Ж'));
+        assert!(has(UPPERCASE_LETTERS, 'ǅ')); // titlecase
+        assert!(has(ALPHANUMERICS, 'x') && has(ALPHANUMERICS, '7'));
+        assert!(has(ALPHANUMERICS, '漢') && has(ALPHANUMERICS, '\u{0301}'));
+        assert!(!has(ALPHANUMERICS, ' ') && !has(ALPHANUMERICS, '-'));
+        assert!(has(PUNCTUATION, '!') && has(PUNCTUATION, '「'));
+        assert!(!has(PUNCTUATION, '+') && !has(PUNCTUATION, 'a'));
+    }
+}

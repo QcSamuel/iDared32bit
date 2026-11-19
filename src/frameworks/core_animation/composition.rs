@@ -10,6 +10,10 @@
 //! diverges wildly from what the real iPhone OS does.
 #![allow(clippy::zero_ptr)] // alas, as you know, opengl
 
+use super::ca_animation::{
+    get_transition, kCATransitionFromBottom, kCATransitionFromRight, kCATransitionFromTop,
+    kCATransitionMoveIn, kCATransitionOglFlip, kCATransitionPush, kCATransitionReveal,
+};
 use super::ca_eagl_layer::find_fullscreen_eagl_layer;
 use super::ca_layer::{CALayerHostObject, ContentsGravity};
 use crate::frameworks::core_animation::animation;
@@ -620,10 +624,13 @@ unsafe fn composite_layer_recursive(
     // It might need to be reworked in the future into a guest presentationLayer
     let host_obj = animation_state.create_presentation_layer(env, layer);
 
-    // A layer being hidden by a fade transition still shows the old picture.
-    if host_obj.hidden && host_obj.fade_transition.is_none() {
+    // A layer being hidden by a transition still shows the old picture.
+    if host_obj.hidden && host_obj.transition.is_none() {
         return;
     }
+    let motion = host_obj
+        .transition
+        .map(|(animation, progress)| transition_motion(env, animation, progress, host_obj.bounds));
 
     let window = env.window.as_mut().unwrap();
     let mut gles = window.make_internal_gl_ctx_current();
@@ -636,6 +643,21 @@ unsafe fn composite_layer_recursive(
         let cumulative_transform =
             <Matrix<4> as From<_>>::from(host_obj.superlayer_to_layer_transform())
                 .multiply(&cumulative_transform);
+        // A transition moving the new picture moves the layer and its
+        // sublayers; the clip and the old picture stay where the layer is.
+        let base_transform = cumulative_transform;
+        let cumulative_transform = match motion {
+            Some(TransitionMotion {
+                new_offset: (x, y), ..
+            }) if (x, y) != (0.0, 0.0) => {
+                Matrix::translate_3d(x, y, 0.0).multiply(&cumulative_transform)
+            }
+            _ => cumulative_transform,
+        };
+        let cumulative_transform = match motion.and_then(|m| m.new_turn) {
+            Some(turn) => turn.multiply(&cumulative_transform),
+            None => cumulative_transform,
+        };
 
         // Reposition and scale the unit quad (see ARRAY_BUFFER binding)
         // so it will have the right size in this layer's co-ordinate space.
@@ -647,16 +669,18 @@ unsafe fn composite_layer_recursive(
                 .multiply(&cumulative_transform),
         );
 
-        cumulative_transform
+        (cumulative_transform, base_transform)
     };
+    let (cumulative_transform, base_transform) = cumulative_transform;
 
-    // A layer that masks to its bounds clips itself and its sublayers.
-    let clip = if host_obj.masks_to_bounds {
+    // A layer that masks to its bounds clips itself and its sublayers, and
+    // so does one with a moving transition.
+    let clip = if host_obj.masks_to_bounds || motion.is_some_and(|m| m.clips) {
         let clip_scale = env.framework_state.core_animation.composition.clip_scale;
         Some(bounds_clip(
             clip_scale,
             host_obj.bounds,
-            &cumulative_transform,
+            &base_transform,
             clip,
         ))
     } else {
@@ -667,17 +691,44 @@ unsafe fn composite_layer_recursive(
     }
     set_clip(gles.as_mut(), clip);
 
-    if host_obj.hidden {
+    // A flip's new side doesn't show until it turns to face the front.
+    if host_obj.hidden || motion.is_some_and(|m| m.new_turn.is_none()) {
         std::mem::drop(gles);
-        let (animation, progress) = host_obj.fade_transition.unwrap();
+        let animation = host_obj.transition.unwrap().0;
         draw_transition_snapshot(
             env,
             animation,
-            progress,
+            motion.unwrap(),
             host_obj.bounds,
-            cumulative_transform,
+            base_transform,
         );
         return;
+    }
+    // The old picture goes under the new one when that moves in over it.
+    if let Some(
+        motion @ TransitionMotion {
+            old_on_top: false, ..
+        },
+    ) = motion
+    {
+        std::mem::drop(gles);
+        let animation = host_obj.transition.unwrap().0;
+        draw_transition_snapshot(env, animation, motion, host_obj.bounds, base_transform);
+        gles = env.window.as_mut().unwrap().make_internal_gl_ctx_current();
+        gles.MatrixMode(gles11::MODELVIEW);
+        load_matrix(
+            gles.as_mut(),
+            Matrix::<4>::from(&Matrix::scale_2d(
+                host_obj.bounds.size.width,
+                host_obj.bounds.size.height,
+            ))
+            .multiply(&Matrix::translate_3d(
+                host_obj.bounds.origin.x,
+                host_obj.bounds.origin.y,
+                0.0,
+            ))
+            .multiply(&cumulative_transform),
+        );
     }
 
     // Draw background color, if any
@@ -937,28 +988,143 @@ unsafe fn composite_layer_recursive(
     }
 
     // The transition covers the sublayers too.
-    if let Some((animation, progress)) = host_obj.fade_transition {
+    if let Some(
+        motion @ TransitionMotion {
+            old_on_top: true, ..
+        },
+    ) = motion
+    {
+        let animation = host_obj.transition.unwrap().0;
         let window = env.window.as_mut().unwrap();
         set_clip(window.make_internal_gl_ctx_current().as_mut(), clip);
-        draw_transition_snapshot(
-            env,
-            animation,
-            progress,
-            host_obj.bounds,
-            cumulative_transform,
-        );
+        draw_transition_snapshot(env, animation, motion, host_obj.bounds, base_transform);
     }
 }
 
-/// Fades out the picture from before a transition over the layer: drawing it
-/// at `1 - progress` over the new picture crossfades between them.
-unsafe fn draw_transition_snapshot(
+/// How a transition draws the old picture and the new one, in the layer's
+/// co-ordinates.
+#[derive(Clone, Copy)]
+struct TransitionMotion {
+    new_offset: (f32, f32),
+    old_offset: (f32, f32),
+    old_alpha: f32,
+    /// Whether the old picture is drawn over the new one.
+    old_on_top: bool,
+    /// Whether the pictures are clipped to the layer's bounds.
+    clips: bool,
+    /// How a flip turns each picture, in the layer's co-ordinates, or
+    /// [None] while that picture faces away.
+    new_turn: Option<Matrix<4>>,
+    old_turn: Option<Matrix<4>>,
+}
+
+fn transition_motion(
     env: &mut Environment,
     animation: id,
     progress: f32,
     bounds: CGRect,
+) -> TransitionMotion {
+    let (transition_type, subtype, _, _) = get_transition(env, animation).unwrap();
+    // The direction the new picture comes from; left is the default.
+    let (dx, dy) = match subtype.as_deref() {
+        Some(s) if s == kCATransitionFromRight => (1.0, 0.0),
+        Some(s) if s == kCATransitionFromTop => (0.0, -1.0),
+        Some(s) if s == kCATransitionFromBottom => (0.0, 1.0),
+        _ => (-1.0, 0.0),
+    };
+    let (w, h) = (bounds.size.width, bounds.size.height);
+    let coming_in = (dx * w * (1.0 - progress), dy * h * (1.0 - progress));
+    let going_out = (-dx * w * progress, -dy * h * progress);
+    let moving = |new_offset, old_offset, old_on_top| TransitionMotion {
+        new_offset,
+        old_offset,
+        old_alpha: 1.0,
+        old_on_top,
+        clips: true,
+        new_turn: Some(Matrix::identity()),
+        old_turn: Some(Matrix::identity()),
+    };
+    match transition_type.as_str() {
+        t if t == kCATransitionPush => moving(coming_in, going_out, true),
+        t if t == kCATransitionMoveIn => moving(coming_in, (0.0, 0.0), false),
+        t if t == kCATransitionReveal => moving((0.0, 0.0), going_out, true),
+        t if t == kCATransitionOglFlip => {
+            // Turns half a turn about the middle, the side the new picture
+            // comes from first toward the viewer.
+            let (about_y, sign) = match subtype.as_deref() {
+                Some(s) if s == kCATransitionFromRight => (true, -1.0),
+                Some(s) if s == kCATransitionFromTop => (false, -1.0),
+                Some(s) if s == kCATransitionFromBottom => (false, 1.0),
+                _ => (true, 1.0),
+            };
+            let angle = sign * progress * std::f32::consts::PI;
+            let turn = |angle: f32| flip_turn(bounds, about_y, angle);
+            TransitionMotion {
+                new_offset: (0.0, 0.0),
+                old_offset: (0.0, 0.0),
+                old_alpha: 1.0,
+                old_on_top: true,
+                clips: false,
+                new_turn: turn(angle - sign * std::f32::consts::PI),
+                old_turn: turn(angle),
+            }
+        }
+        // Fade: the old picture fades out over the new one.
+        _ => TransitionMotion {
+            new_offset: (0.0, 0.0),
+            old_offset: (0.0, 0.0),
+            old_alpha: 1.0 - progress,
+            old_on_top: true,
+            clips: false,
+            new_turn: Some(Matrix::identity()),
+            old_turn: Some(Matrix::identity()),
+        },
+    }
+}
+
+/// A turn of `angle` about the layer's middle, vertical (`about_y`) or
+/// horizontal, seen in perspective; [None] if it faces away.
+fn flip_turn(bounds: CGRect, about_y: bool, angle: f32) -> Option<Matrix<4>> {
+    if angle.abs() >= std::f32::consts::FRAC_PI_2 {
+        return None;
+    }
+    let cx = bounds.origin.x + bounds.size.width / 2.0;
+    let cy = bounds.origin.y + bounds.size.height / 2.0;
+    let rotation = Matrix::<4>::from(&if about_y {
+        Matrix::y_rotation(angle)
+    } else {
+        Matrix::x_rotation(angle)
+    });
+    // Seen from twice the layer's size away. Depth then becomes 0, as
+    // nothing else is drawn in 3D and the projection would clip it.
+    let distance = 2.0 * bounds.size.width.max(bounds.size.height);
+    let perspective = Matrix::from_columns([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, -1.0 / distance],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    Some(
+        Matrix::translate_3d(-cx, -cy, 0.0)
+            .multiply(&rotation)
+            .multiply(&perspective)
+            .multiply(&Matrix::translate_3d(cx, cy, 0.0)),
+    )
+}
+
+/// Draws the picture from before a transition where the layer is, moved and
+/// faded as `motion` says.
+unsafe fn draw_transition_snapshot(
+    env: &mut Environment,
+    animation: id,
+    motion: TransitionMotion,
+    bounds: CGRect,
     cumulative_transform: Matrix<4>,
 ) {
+    // A flip's old side doesn't show once it turns away.
+    let Some(turn) = motion.old_turn else {
+        return;
+    };
     let state = &env.framework_state.core_animation.composition;
     // There's none if the transition began on the first frame.
     let Some(snapshot) = state
@@ -989,14 +1155,20 @@ unsafe fn draw_transition_snapshot(
     let window = env.window.as_mut().unwrap();
     let mut gles = window.make_internal_gl_ctx_current();
     gles.MatrixMode(gles11::MODELVIEW);
+    let (ox, oy) = motion.old_offset;
     load_matrix(
         gles.as_mut(),
         Matrix::<4>::from(&Matrix::scale_2d(bounds.size.width, bounds.size.height))
-            .multiply(&Matrix::translate_3d(bounds.origin.x, bounds.origin.y, 0.0))
+            .multiply(&Matrix::translate_3d(
+                bounds.origin.x + ox,
+                bounds.origin.y + oy,
+                0.0,
+            ))
+            .multiply(&turn)
             .multiply(&cumulative_transform),
     );
 
-    let alpha = 1.0 - progress;
+    let alpha = motion.old_alpha;
     gles.Color4f(alpha, alpha, alpha, alpha);
     gles.Enable(gles11::BLEND);
     gles.BlendFunc(gles11::ONE, gles11::ONE_MINUS_SRC_ALPHA);
@@ -1142,4 +1314,43 @@ unsafe fn upload_rgba8_pixels(gles: &mut dyn GLES, pixels: &[u8], dimensions: (u
         gles11::TEXTURE_WRAP_T,
         gles11::CLAMP_TO_EDGE as _,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frameworks::core_graphics::CGPoint;
+
+    /// Where a point in the layer ends up after a turn, in 2D.
+    fn turned(turn: Matrix<4>, x: f32, y: f32) -> (f32, f32) {
+        let [x, y, _, w] = turn.transform([x, y, 0.0, 1.0]);
+        (x / w, y / w)
+    }
+
+    #[test]
+    fn flip_turn_in_perspective() {
+        let bounds = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize {
+                width: 320.0,
+                height: 480.0,
+            },
+        };
+        let flat = flip_turn(bounds, true, 0.0).unwrap();
+        assert_eq!(turned(flat, 10.0, 20.0), (10.0, 20.0));
+
+        let turn = flip_turn(bounds, true, std::f32::consts::FRAC_PI_4).unwrap();
+        // The middle stays put; the left side comes nearer, so it's taller
+        // than the right side, and both move in toward the middle.
+        let (cx, cy) = turned(turn, 160.0, 240.0);
+        assert!((cx - 160.0).abs() < 0.01 && (cy - 240.0).abs() < 0.01);
+        let (left_x, left_top) = turned(turn, 0.0, 0.0);
+        let (right_x, right_top) = turned(turn, 320.0, 0.0);
+        assert!(left_x > 0.0 && right_x < 320.0);
+        assert!(left_top < right_top);
+
+        // Edge-on or beyond, the side faces away.
+        assert!(flip_turn(bounds, true, std::f32::consts::FRAC_PI_2).is_none());
+        assert!(flip_turn(bounds, false, -2.0).is_none());
+    }
 }

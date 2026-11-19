@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 
 use super::cf_allocator::{kCFAllocatorDefault, CFAllocatorRef};
 use super::CFIndex;
-use crate::dyld::{export_c_func, FunctionExports};
+use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant};
 use crate::frameworks::core_foundation::cf_string::{
     kCFStringEncodingASCII, kCFStringEncodingUTF8, CFStringConvertEncodingToNSStringEncoding,
     CFStringEncoding, CFStringRef,
@@ -21,7 +21,7 @@ use crate::frameworks::core_foundation::cf_string::{
 use crate::frameworks::foundation::ns_string::{
     from_rust_string, get_static_str, to_rust_string, NSUTF8StringEncoding,
 };
-use crate::frameworks::foundation::NSUInteger;
+use crate::frameworks::foundation::{ns_url, NSUInteger};
 use crate::mem::{ConstPtr, MutPtr, Ptr};
 use crate::objc::{id, msg, msg_class, nil, release};
 use crate::Environment;
@@ -54,6 +54,12 @@ pub fn CFURLGetFileSystemRepresentation(
     }
     let buffer_size: NSUInteger = buffer_size.try_into().unwrap();
 
+    if !resolve_against_base {
+        if let Some(relative) = ns_url::relative_path(env, url) {
+            return msg![env; relative getFileSystemRepresentation:buffer
+                                                         maxLength:buffer_size];
+        }
+    }
     msg![env; url getFileSystemRepresentation:buffer
                                     maxLength:buffer_size]
 }
@@ -68,10 +74,14 @@ pub fn CFURLCreateFromFileSystemRepresentation(
     assert!(allocator == kCFAllocatorDefault || env.mem.read(allocator).is_system_default()); // unimplemented
 
     let buffer_size: NSUInteger = buffer_size.try_into().unwrap();
+    // The path ends at a NUL: some games pass their whole char[] buffer.
+    let bytes = env.mem.bytes_at(buffer, buffer_size);
+    let length = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    let length: NSUInteger = length.try_into().unwrap();
 
     let string: id = msg_class![env; NSString alloc];
     let string: id = msg![env; string initWithBytes:buffer
-                                             length:buffer_size
+                                             length:length
                                            encoding:NSUTF8StringEncoding];
 
     let url: id = msg_class![env; NSURL alloc];
@@ -257,7 +267,57 @@ pub fn CFURLCreateStringByAddingPercentEscapes(
     from_rust_string(env, final_string)
 }
 
+const kCFURLFileExists: &str = "kCFURLFileExists";
+const kCFURLFileLength: &str = "kCFURLFileLength";
+const kCFURLResourceNotFoundError: i32 = -12;
+
+/// The old resource API: only properties of local files are supported.
+fn CFURLCreatePropertyFromResource(
+    env: &mut Environment,
+    allocator: CFAllocatorRef,
+    url: CFURLRef,
+    property: CFStringRef,
+    error_code: MutPtr<i32>,
+) -> super::CFTypeRef {
+    assert!(allocator == kCFAllocatorDefault || env.mem.read(allocator).is_system_default()); // unimplemented
+    let path: id = msg![env; url path];
+    let path = to_rust_string(env, path);
+    let path = crate::fs::GuestPath::new(&path);
+    let property = to_rust_string(env, property);
+    let (value, error): (id, i32) = match &*property {
+        kCFURLFileExists => {
+            let exists = env.fs.exists(path);
+            let number: id = msg_class![env; NSNumber alloc];
+            (msg![env; number initWithBool:exists], 0)
+        }
+        kCFURLFileLength => match env.fs.size(path) {
+            Ok(size) => {
+                let number: id = msg_class![env; NSNumber alloc];
+                (msg![env; number initWithLongLong:(size as i64)], 0)
+            }
+            Err(()) => (nil, kCFURLResourceNotFoundError),
+        },
+        _ => unimplemented!("CFURLCreatePropertyFromResource {:?}", property),
+    };
+    if !error_code.is_null() {
+        env.mem.write(error_code, error);
+    }
+    value
+}
+
+pub const CONSTANTS: ConstantExports = &[
+    (
+        "_kCFURLFileExists",
+        HostConstant::NSString(kCFURLFileExists),
+    ),
+    (
+        "_kCFURLFileLength",
+        HostConstant::NSString(kCFURLFileLength),
+    ),
+];
+
 pub const FUNCTIONS: FunctionExports = &[
+    export_c_func!(CFURLCreatePropertyFromResource(_, _, _, _)),
     export_c_func!(CFURLGetFileSystemRepresentation(_, _, _, _)),
     export_c_func!(CFURLCreateFromFileSystemRepresentation(_, _, _, _)),
     export_c_func!(CFURLCreateWithBytes(_, _, _, _, _)),

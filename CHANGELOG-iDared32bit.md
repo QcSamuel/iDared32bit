@@ -9,6 +9,41 @@ CPU:
 - Replaced the ARM interpreter with the dynarmic JIT recompiler (the iOS-host fork used by Applesauce), vendored in `vendor/dynarmic/`. Games run much faster, but JIT must now be enabled for the app each time it starts (for example with StikDebug).
 - Fat binaries now prefer the ARMv7 slice, then ARMv6, then ARMv7s.
 
+## v1.5.3 (2026-11-17)
+
+Usability:
+
+- Games that vibrate the phone now do, and rumble a connected controller too.
+- On iOS, games' movies now play instead of being skipped.
+- The on-screen Home button now has smooth edges.
+
+Compatibility:
+
+- Fixed a crash when starting some games made for iOS 4.
+- Fixed wrongly sized or sideways graphics in some landscape games.
+- Fixed a crash in some games when going back to an earlier screen.
+- Fixed missing sound effects in some games.
+- Fixed crashes when starting some games.
+- Fixed sliders not being drawn or not working in some games.
+- Fixed some games getting stuck on a blank screen after an animation.
+- Fixed crashes in some games that release objects too many times.
+- Fixed taps landing in the wrong place in some games.
+- Fixed crashes in some games that slide or flip between screens.
+- Fixed random crashes in some games that animate parts of their screens.
+- Fixed buttons not showing or not responding in some games, and some games getting stuck while loading.
+- Text shadows are now drawn.
+- Fixed a black screen after leaving a game while its keyboard was showing.
+- Games that need OpenGL ES 2.0, which isn't supported yet, now say so when they stop.
+- Added tab bars, so games that use them can switch between their screens.
+- Added action sheets, so games that use them can offer their choices.
+- Added loading spinners, which some games show while loading.
+- Web pages in games (help, about and credits screens) are now shown, with their colours and fonts.
+- Games no longer quit when opening a link that no app on the device could open.
+- Games that handle errors (such as having no network) with exceptions no longer crash.
+- Text in the Verdana font is now drawn with a much closer substitute.
+- Fixed crashes in some games' online screens, and the game turning sideways after closing them.
+- Various small fixes.
+
 ## v1.5.2 (2026-11-07)
 
 Usability:

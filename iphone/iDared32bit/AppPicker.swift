@@ -623,7 +623,12 @@ final class PickerHostingController: UIHostingController<PickerView> {
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        model.safeInsets = view.safeAreaInsets
+        // This can come during a SwiftUI update, which mustn't publish.
+        let insets = view.safeAreaInsets
+        guard insets != model.safeInsets else { return }
+        DispatchQueue.main.async { [model] in
+            model.safeInsets = insets
+        }
     }
 }
 
@@ -837,6 +842,17 @@ func layOutLabels(
 struct PickerView: View {
     @ObservedObject var model: PickerModel
 
+    /// For presentations: SwiftUI can write a flag back unchanged during a
+    /// view update, and publishing then isn't allowed.
+    private func presenting(
+        _ flag: ReferenceWritableKeyPath<PickerModel, Bool>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { model[keyPath: flag] },
+            set: { if model[keyPath: flag] != $0 { model[keyPath: flag] = $0 } }
+        )
+    }
+
     var body: some View {
         content
             .statusBarHidden(false)
@@ -893,10 +909,10 @@ struct PickerView: View {
             } message: {
                 Text(model.importError ?? "")
             }
-            .sheet(isPresented: $model.showingSettings) {
+            .sheet(isPresented: presenting(\.showingSettings)) {
                 SettingsView(model: model)
             }
-            .alert("JIT Isn’t Enabled", isPresented: $model.showingJITAlert) {
+            .alert("JIT Isn’t Enabled", isPresented: presenting(\.showingJITAlert)) {
                 Button("Enable JIT") {
                     model.enableJIT()
                 }
@@ -912,7 +928,7 @@ struct PickerView: View {
                         + "Enable JIT in StikDebug, then start the game again."
                 )
             }
-            .alert("The Game Stopped", isPresented: $model.showingStartError) {
+            .alert("The Game Stopped", isPresented: presenting(\.showingStartError)) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(model.input.startError ?? "")
@@ -998,7 +1014,7 @@ struct PickerView: View {
         // Here, not beside the Settings sheet: on iOS 16, two presentations
         // on one view can keep each other from showing.
         .fileImporter(
-            isPresented: $model.showingImporter,
+            isPresented: presenting(\.showingImporter),
             allowedContentTypes: [UTType(filenameExtension: "ipa") ?? .data, .folder],
             allowsMultipleSelection: true
         ) { result in

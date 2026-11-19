@@ -273,6 +273,9 @@ pub struct Window {
     device_orientation: DeviceOrientation,
     controller_ctx: sdl2::GameControllerSubsystem,
     controllers: Vec<sdl2::controller::GameController>,
+    /// The device's own vibrator, opened on first use (see [Self::vibrate]).
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
+    device_vibrator: Option<Option<DeviceVibrator>>,
     dpad_state: DpadState,
     stick_active: bool,
     _sensor_ctx: sdl2::SensorSubsystem,
@@ -450,6 +453,7 @@ impl Window {
             device_orientation,
             controller_ctx,
             controllers: Vec::new(),
+            device_vibrator: None,
             dpad_state: DpadState {
                 left: false,
                 right: false,
@@ -1005,6 +1009,15 @@ impl Window {
         self.on_screen_home_button = ON_SCREEN_HOME_BUTTON_PLATFORM;
     }
 
+    /// Drawable pixels per window point. Long sides are compared, as the
+    /// window's size can be in the other orientation (on iOS, while the game
+    /// asks for one the device isn't in).
+    fn pixels_per_point(&self) -> f32 {
+        let (screen_width, screen_height) = self.window.drawable_size();
+        let (window_width, window_height) = self.window.size();
+        screen_width.max(screen_height) as f32 / window_width.max(window_height) as f32
+    }
+
     /// Where the on-screen Home button is, if it's shown: its centre and
     /// radius, in drawable pixels from the top left.
     ///
@@ -1019,7 +1032,7 @@ impl Window {
         }
         let (vx, vy, vw, vh) = self.viewport();
         let (screen_width, screen_height) = self.window.drawable_size();
-        let pixels_per_point = screen_width as f32 / self.window.size().0 as f32;
+        let pixels_per_point = self.pixels_per_point();
         let bottom_bar = (screen_height - (vy + vh)) as f32;
         let right_bar = (screen_width - (vx + vw)) as f32;
         let (bar, x, y) = if bottom_bar > 0.0 && bottom_bar >= right_bar {
@@ -1124,6 +1137,37 @@ impl Window {
         self.high_priority_event
             .take()
             .or_else(|| self.event_queue.pop_front())
+    }
+
+    /// Vibrates, as `kSystemSoundID_Vibrate` does: the device itself where
+    /// it can, and any connected controller.
+    pub fn vibrate(&mut self) {
+        // About as long as an iPhone's.
+        const DURATION_MS: u32 = 400;
+        for controller in &mut self.controllers {
+            // Not every controller can rumble.
+            let _ = controller.set_rumble(0xffff, 0xffff, DURATION_MS);
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            #[link(name = "AudioToolbox", kind = "framework")]
+            extern "C" {
+                fn AudioServicesPlaySystemSound(sound_id: u32);
+            }
+            // kSystemSoundID_Vibrate
+            unsafe { AudioServicesPlaySystemSound(0xfff) };
+        }
+        #[cfg(not(target_os = "ios"))]
+        {
+            let sdl_ctx = &self._sdl_ctx;
+            let vibrator = self
+                .device_vibrator
+                .get_or_insert_with(|| DeviceVibrator::open(sdl_ctx));
+            if let Some(vibrator) = vibrator {
+                vibrator.rumble(DURATION_MS);
+            }
+        }
     }
 
     fn controller_added(&mut self, joystick_idx: u32) {
@@ -1726,7 +1770,7 @@ impl Window {
         }
 
         let (screen_width, screen_height) = self.window.drawable_size();
-        let pixels_per_point = screen_width as f32 / self.window.size().0 as f32;
+        let pixels_per_point = self.pixels_per_point();
 
         let app_aspect = app_width as f32 / app_height as f32;
         let fit = |width: u32, height: u32| {
@@ -1884,6 +1928,12 @@ impl Window {
     }
     pub fn stop_text_input(&self) {
         assert!(self.on_main_stack);
+        unsafe {
+            sdl2_sys::SDL_StopTextInput();
+        }
+    }
+    /// For when the app ends, from wherever that happens.
+    pub fn stop_text_input_on_exit(&self) {
         unsafe {
             sdl2_sys::SDL_StopTextInput();
         }
@@ -2137,8 +2187,14 @@ pub static RETURN_TO_APP_PICKER_AFTER_ERROR: std::sync::atomic::AtomicBool =
 /// The window argument allows for passing in the parent window for the
 /// messagebox, which is not required but should be done if possible.
 pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
-    // Our own private classes are named _touchHLE_Foo.
-    let error_message = &error_message.replace("_touchHLE_", "(private class)_");
+    let error_message = &crate::log::public_names(error_message.to_string());
+    // Its crash is most likely just a result of that, so say so instead.
+    let gles2_refused = &crate::frameworks::opengles::GLES2_REFUSED;
+    let error_message = if gles2_refused.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        "This game requires OpenGL ES 2.0, which is not supported yet"
+    } else {
+        error_message
+    };
     // On iOS, the app picker shows it instead, with an OK button, so the
     // game always returns there.
     if cfg!(target_os = "ios") {
@@ -2238,4 +2294,47 @@ pub fn get_preferred_country_codes(env: &mut Environment) -> Vec<String> {
             .filter_map(|loc| loc.country)
             .collect()
     })
+}
+
+/// A phone's own vibrator, which SDL lists as a haptic device on Android.
+/// (iOS's is used directly.)
+#[cfg_attr(target_os = "ios", allow(dead_code))]
+struct DeviceVibrator {
+    _haptic_ctx: sdl2::HapticSubsystem,
+    haptic: *mut sdl2::sys::SDL_Haptic,
+}
+#[cfg_attr(target_os = "ios", allow(dead_code))]
+impl DeviceVibrator {
+    /// SDL's name for it on Android.
+    const NAME: &'static [u8] = b"VIBRATOR_SERVICE";
+
+    fn open(sdl_ctx: &sdl2::Sdl) -> Option<DeviceVibrator> {
+        use sdl2::sys;
+        let haptic_ctx = sdl_ctx.haptic().ok()?;
+        let index = (0..unsafe { sys::SDL_NumHaptics() }).find(|&i| {
+            let name = unsafe { sys::SDL_HapticName(i) };
+            !name.is_null() && unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes() == Self::NAME
+        })?;
+        let haptic = unsafe { sys::SDL_HapticOpen(index) };
+        if haptic.is_null() {
+            return None;
+        }
+        if unsafe { sys::SDL_HapticRumbleInit(haptic) } != 0 {
+            unsafe { sys::SDL_HapticClose(haptic) };
+            return None;
+        }
+        Some(DeviceVibrator {
+            _haptic_ctx: haptic_ctx,
+            haptic,
+        })
+    }
+
+    fn rumble(&mut self, duration_ms: u32) {
+        unsafe { sdl2::sys::SDL_HapticRumblePlay(self.haptic, 1.0, duration_ms) };
+    }
+}
+impl Drop for DeviceVibrator {
+    fn drop(&mut self) {
+        unsafe { sdl2::sys::SDL_HapticClose(self.haptic) };
+    }
 }

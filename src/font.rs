@@ -99,21 +99,37 @@ impl Font {
             panic!("Couldn't parse bundled font file {path:?}. This probably means the file is corrupt. Try re-downloading it.");
         };
 
-        // Determined by testing multiple scale values manually
-        let scale_factor = if filename.contains("CaveatBrush") {
-            1.35
-        } else {
-            1.125
+        // iPhone OS's interpretation of font size is slightly different from
+        // our substitutes'. These have been eyeball'd, they're not exact.
+        let scale_factor = match filename {
+            // Liberation for Helvetica, Times and Courier, Noto Sans JP for
+            // Japanese text.
+            "LiberationSans-Regular.ttf"
+            | "LiberationSans-Bold.ttf"
+            | "LiberationSans-BoldItalic.ttf"
+            | "LiberationSans-Italic.ttf"
+            | "LiberationSerif-Regular.ttf"
+            | "LiberationSerif-Bold.ttf"
+            | "LiberationSerif-BoldItalic.ttf"
+            | "LiberationSerif-Italic.ttf"
+            | "LiberationMono-Regular.ttf"
+            | "LiberationMono-Bold.ttf"
+            | "LiberationMono-BoldItalic.ttf"
+            | "LiberationMono-Italic.ttf"
+            | "NotoSansJP-Regular.otf"
+            | "NotoSansJP-Bold.otf" => 1.125,
+            // For Marker Felt.
+            "CaveatBrush-Regular.ttf" => 1.35,
+            // For Verdana. Its (ascent - descent) / em, as for games' fonts.
+            "DejaVuSans.ttf"
+            | "DejaVuSans-Bold.ttf"
+            | "DejaVuSans-BoldOblique.ttf"
+            | "DejaVuSans-Oblique.ttf" => 1.164,
+            // Unscaled until compared with iPhone OS.
+            _ => 1.0,
         };
 
-        Font {
-            font,
-            // TODO: Make this a lookup based on the actual font
-            // iPhone OS's interpretation of font size is slightly different,
-            // when substituting Helvetica with our Liberation font.
-            // This scale factor has been eyeball'd, it's not exact.
-            scale_factor,
-        }
+        Font { font, scale_factor }
     }
 
     pub fn from_vec(bytes: Vec<u8>) -> Font {
@@ -200,6 +216,18 @@ impl Font {
     }
     pub fn marker_felt() -> Font {
         Self::from_resource_file("CaveatBrush-Regular.ttf")
+    }
+    pub fn verdana_regular() -> Font {
+        Self::from_resource_file("DejaVuSans.ttf")
+    }
+    pub fn verdana_bold() -> Font {
+        Self::from_resource_file("DejaVuSans-Bold.ttf")
+    }
+    pub fn verdana_bold_italic() -> Font {
+        Self::from_resource_file("DejaVuSans-BoldOblique.ttf")
+    }
+    pub fn verdana_italic() -> Font {
+        Self::from_resource_file("DejaVuSans-Oblique.ttf")
     }
 
     pub fn units_per_em(&self) -> u16 {

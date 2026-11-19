@@ -35,6 +35,8 @@ pub const kCFStringEncodingISOLatin1: CFStringEncoding = 0x0201;
 pub const kCFStringEncodingUTF32: CFStringEncoding = 0x0c000100;
 pub const kCFStringEncodingUTF32BE: CFStringEncoding = 0x18000100;
 pub const kCFStringEncodingUTF32LE: CFStringEncoding = 0x1c000100;
+/// Windows code page 949.
+pub const kCFStringEncodingDOSKorean: CFStringEncoding = 0x0422;
 
 fn CFStringAppend(
     env: &mut Environment,
@@ -42,6 +44,20 @@ fn CFStringAppend(
     appended_string: CFStringRef,
 ) {
     msg![env; the_string appendString:appended_string]
+}
+
+fn CFStringAppendCharacters(
+    env: &mut Environment,
+    string: CFMutableStringRef,
+    chars: ConstPtr<unichar>,
+    num_chars: CFIndex,
+) {
+    if num_chars == 0 {
+        return;
+    }
+    let length: NSUInteger = num_chars.try_into().unwrap();
+    let to_append: id = msg_class![env; NSString stringWithCharacters:chars length:length];
+    msg![env; string appendString:to_append]
 }
 
 fn CFStringAppendCString(
@@ -84,6 +100,7 @@ pub fn CFStringConvertEncodingToNSStringEncoding(
         kCFStringEncodingUTF32 => ns_string::NSUTF32StringEncoding,
         kCFStringEncodingUTF32BE => ns_string::NSUTF32BigEndianStringEncoding,
         kCFStringEncodingUTF32LE => ns_string::NSUTF32LittleEndianStringEncoding,
+        kCFStringEncodingDOSKorean => ns_string::NSDOSKoreanStringEncoding,
         _ => unimplemented!("Unhandled: CFStringEncoding {:#x}", encoding),
     }
 }
@@ -102,6 +119,7 @@ fn CFStringConvertNSStringEncodingToEncoding(
         ns_string::NSUTF32StringEncoding => kCFStringEncodingUTF32,
         ns_string::NSUTF32BigEndianStringEncoding => kCFStringEncodingUTF32BE,
         ns_string::NSUTF32LittleEndianStringEncoding => kCFStringEncodingUTF32LE,
+        ns_string::NSDOSKoreanStringEncoding => kCFStringEncodingDOSKorean,
         _ => unimplemented!("Unhandled: NSStringEncoding {:#x}", encoding),
     }
 }
@@ -455,6 +473,7 @@ fn CFStringNormalize(
 
 pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(CFStringAppend(_, _)),
+    export_c_func!(CFStringAppendCharacters(_, _, _)),
     export_c_func!(CFStringAppendCString(_, _, _)),
     export_c_func!(CFStringAppendFormat(_, _, _, _)),
     export_c_func!(CFStringConvertEncodingToNSStringEncoding(_)),

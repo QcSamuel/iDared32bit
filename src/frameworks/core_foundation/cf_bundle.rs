@@ -15,7 +15,7 @@ use super::cf_url::CFURLRef;
 use super::CFTypeRef;
 use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant};
 use crate::frameworks::foundation::ns_bundle::NSBundleHostObject;
-use crate::frameworks::foundation::{ns_array, ns_string, NSUInteger};
+use crate::frameworks::foundation::{ns_array, ns_string, ns_url, NSUInteger};
 use crate::objc::{id, msg, msg_class, retain};
 use crate::Environment;
 
@@ -105,6 +105,29 @@ fn CFBundleCopyResourceURL(
                                           withExtension:resource_type
                                            subdirectory:sub_dir_name];
     msg![env; url copy]
+}
+
+fn CFBundleCopyResourceURLsOfType(
+    env: &mut Environment,
+    bundle: CFBundleRef,
+    resource_type: CFStringRef,
+    sub_dir_name: CFStringRef,
+) -> CFArrayRef {
+    let paths: id = msg![env; bundle pathsForResourcesOfType:resource_type
+                                                inDirectory:sub_dir_name];
+    // As on iOS, the URLs are relative to the resources folder.
+    let base: id = msg![env; bundle resourcePath];
+    let base = ns_string::to_rust_string(env, base).into_owned();
+    let count: NSUInteger = msg![env; paths count];
+    let urls = (0..count)
+        .map(|i| {
+            let path: id = msg![env; paths objectAtIndex:i];
+            let path = ns_string::to_rust_string(env, path);
+            let relative = path.strip_prefix(&format!("{base}/")).unwrap();
+            ns_url::file_url_relative_to(env, relative, &base)
+        })
+        .collect();
+    ns_array::from_vec(env, urls)
 }
 
 pub fn CFBundleCopyBundleLocalizations(env: &mut Environment, bundle: CFBundleRef) -> CFArrayRef {
@@ -197,6 +220,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(CFBundleCopyExecutableURL(_)),
     export_c_func!(CFBundleCopyResourcesDirectoryURL(_)),
     export_c_func!(CFBundleCopyResourceURL(_, _, _, _)),
+    export_c_func!(CFBundleCopyResourceURLsOfType(_, _, _)),
     export_c_func!(CFBundleCopyBundleLocalizations(_)),
     export_c_func!(CFBundleCopyPreferredLocalizationsFromArray(_)),
     export_c_func!(CFBundleCopyLocalizedString(_, _, _, _)),
