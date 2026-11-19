@@ -6,7 +6,9 @@
 //! `stdlib.h`
 
 use crate::abi::{CallFromHost, GuestFunction};
-use crate::dyld::{export_c_func, export_c_func_aliased, FunctionExports};
+use crate::dyld::{
+    export_c_func, export_c_func_aliased, ConstantExports, FunctionExports, HostConstant,
+};
 use crate::fs::{resolve_path, GuestPath};
 use crate::libc::clocale::{setlocale, LC_CTYPE};
 use crate::libc::errno::{set_errno, EEXIST, EINVAL, ENAMETOOLONG, ENOTDIR};
@@ -328,6 +330,32 @@ fn exit(env: &mut Environment, exit_code: i32) {
 
     echo!("App called exit({}), returning to app picker.", exit_code);
     env.return_to_app_picker = true;
+}
+
+/// `assert.h`'s failure handler: as on iOS, the game crashes.
+fn __assert_rtn(
+    env: &mut Environment,
+    func: ConstPtr<u8>,
+    file: ConstPtr<u8>,
+    line: i32,
+    expr: ConstPtr<u8>,
+) {
+    let cstr = |env: &Environment, s: ConstPtr<u8>| {
+        String::from_utf8_lossy(env.mem.cstr_at(s)).into_owned()
+    };
+    let expr = cstr(env, expr);
+    let file = cstr(env, file);
+    if func.is_null() {
+        panic!("Assertion failed: ({expr}), file {file}, line {line}.");
+    }
+    let func = cstr(env, func);
+    panic!("Assertion failed: ({expr}), function {func}, file {file}, line {line}.");
+}
+
+/// Called by code built with stack protection when the canary in
+/// `__stack_chk_guard` was overwritten: as on iOS, the game crashes.
+fn __stack_chk_fail(_env: &mut Environment) {
+    panic!("Stack buffer overflow detected (__stack_chk_fail).");
 }
 
 fn bsearch(
@@ -771,7 +799,15 @@ fn basename(env: &mut Environment, path: ConstPtr<u8>) -> MutPtr<u8> {
     buf
 }
 
+pub const CONSTANTS: ConstantExports = &[(
+    "___stack_chk_guard",
+    // The canary that stack-protected code puts in each stack frame. iOS
+    // picks a random one; any nonzero value works.
+    HostConstant::Custom(|env| env.mem.alloc_and_write(0x00ff0a0du32).cast().cast_const()),
+)];
+
 pub const FUNCTIONS: FunctionExports = &[
+    export_c_func!(__stack_chk_fail()),
     export_c_func!(malloc(_)),
     export_c_func!(malloc_size(_)),
     export_c_func!(calloc(_, _)),
@@ -795,6 +831,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(setenv(_, _, _)),
     export_c_func!(unsetenv(_)),
     export_c_func!(exit(_)),
+    export_c_func!(__assert_rtn(_, _, _, _)),
     export_c_func!(bsearch(_, _, _, _, _)),
     export_c_func!(strtof(_, _)),
     export_c_func!(strtoul(_, _, _)),

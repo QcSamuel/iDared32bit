@@ -125,6 +125,10 @@ pub const CLASSES: ClassExports = objc_classes! {
     // classes are not refcounted
 }
 
++ (bool)conformsToProtocol:(ConstVoidPtr)protocol {
+    env.objc.class_conforms_to_protocol(&env.mem, this, protocol)
+}
+
 + (bool)instancesRespondToSelector:(SEL)selector {
     env.objc.class_has_method(this, selector)
 }
@@ -191,6 +195,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (())dealloc {
     log_dbg!("[{:?} dealloc]", this);
+    crate::objc::call_cxx_destructors(env, this);
     ns_key_value_observing::forget_object(env, this);
     env.objc.dealloc_object(this, &mut env.mem)
 }
@@ -600,6 +605,11 @@ forUndefinedKey:(id)key { // NSString*
 
 - (bool)respondsToSelector:(SEL)selector {
     env.objc.object_has_method(&env.mem, this, selector)
+}
+
+- (bool)conformsToProtocol:(ConstVoidPtr)protocol {
+    let class = ObjC::read_isa(this, &env.mem);
+    env.objc.class_conforms_to_protocol(&env.mem, class, protocol)
 }
 
 - (id)performSelector:(SEL)sel {

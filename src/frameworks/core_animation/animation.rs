@@ -22,7 +22,8 @@ use crate::frameworks::core_animation::ca_animation::{
     get_animation_start_time, get_animation_stopped, get_group_animations, get_keyframes,
     get_transition, kCAAnimationCubic, kCAAnimationCubicPaced, kCAAnimationDiscrete,
     kCAAnimationPaced, kCAFillModeBackwards, kCAFillModeBoth, kCAFillModeForwards,
-    kCATransitionFade, CAMediaTimingFillMode, Keyframes,
+    kCATransitionFade, kCATransitionMoveIn, kCATransitionOglFlip, kCATransitionPush,
+    kCATransitionReveal, CAMediaTimingFillMode, Keyframes,
 };
 use crate::frameworks::core_animation::ca_layer::remove_anonymous_animation;
 use crate::frameworks::core_animation::ca_transform_3d::CATransform3D;
@@ -150,6 +151,21 @@ impl State {
         presentation
     }
 
+    /// The layer as it's on screen now, mid-animation. Unlike
+    /// [Self::create_presentation_layer], it starts and stops nothing:
+    /// that's left to the compositor.
+    pub fn current_presentation(env: &mut Environment, layer: id) -> CALayerHostObject {
+        let mut state = State::default();
+        let presentation = state.create_presentation_layer(env, layer);
+        for animation in state.started_animations {
+            *get_animation_start_time(env, animation) = None;
+        }
+        for (_, animation, ..) in state.finished_animations {
+            *get_animation_stopped(env, animation) = false;
+        }
+        presentation
+    }
+
     pub fn update_started_and_finished_animations(self, env: &mut Environment) {
         // A delegate may remove animations, so keep them alive until done.
         for (layer, animation, ..) in &self.finished_animations {
@@ -222,12 +238,20 @@ fn apply_animation(
         return;
     }
 
-    if let Some((transition_type, start, end)) = get_transition(env, animation) {
-        if transition_type != kCATransitionFade {
+    if let Some((transition_type, _, start, end)) = get_transition(env, animation) {
+        if ![
+            kCATransitionFade,
+            kCATransitionPush,
+            kCATransitionMoveIn,
+            kCATransitionReveal,
+            kCATransitionOglFlip,
+        ]
+        .contains(&transition_type.as_str())
+        {
             unimplemented!("CATransition type {:?} isn't implemented", transition_type);
         }
-        // The compositor fades the old picture out over the new one.
-        presentation.fade_transition = Some((animation, start + (end - start) * amount));
+        // The compositor moves or fades the old picture and the new one.
+        presentation.transition = Some((animation, start + (end - start) * amount));
         return;
     }
 

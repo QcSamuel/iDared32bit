@@ -88,6 +88,23 @@ pub const CLASSES: ClassExports = objc_classes! {
     nil
 }
 
++ (id)pathForResource:(id)name // NSString*
+               ofType:(id)extension // NSString*
+          inDirectory:(id)bundle_path { // NSString*
+    // A throwaway bundle for the path, to search it like any other.
+    let host_object = NSBundleHostObject {
+        bundle: None,
+        bundle_path,
+        bundle_identifier: nil,
+        bundle_url: None,
+        info_dictionary: None,
+    };
+    let bundle = env.objc.alloc_object(this, Box::new(host_object), &mut env.mem);
+    let path: id = msg![env; bundle pathForResource:name ofType:extension inDirectory:nil];
+    release(env, bundle);
+    path
+}
+
 + (id)preferredLocalizationsFromArray:(id)localizations_array { // NSArray<NSString *> *
     let preferredLocalizations = CFBundleCopyPreferredLocalizationsFromArray(env, localizations_array);
     autorelease(env, preferredLocalizations)
@@ -178,6 +195,43 @@ pub const CLASSES: ClassExports = objc_classes! {
     msg_class![env; NSURL fileURLWithPath:exec_path]
 }
 
+- (id)pathForResource:(id)name // NSString*
+               ofType:(id)extension // NSString*
+          inDirectory:(id)directory // NSString*
+      forLocalization:(id)localizationName { // NSString*
+    if localizationName == nil {
+        return msg![env; this pathForResource:name ofType:extension inDirectory:directory];
+    }
+    assert!(name != nil); // TODO
+
+    // TODO: cache result of lookups
+
+    let path = path_for_resource_helper(env, this, name, nil, directory, extension);
+    if path != nil {
+        return path;
+    }
+
+    // The localization is an .lproj folder's name, e.g. "fr" or "French".
+    // Bundles use either for the same language, so both are tried.
+    let lang = ns_string::to_rust_string(env, localizationName);
+    let first = format!("{lang}.lproj");
+    let mut lprojs = vec![first.clone()];
+    if let Some(&(_, names)) = LANG_ID_TO_LANG_PROJ
+        .iter()
+        .find(|&&(code, names)| code == lang || names.contains(&first.as_str()))
+    {
+        lprojs.extend(names.iter().filter(|&&n| n != first).map(|&n| n.to_string()));
+    }
+    for lproj in lprojs {
+        let lproj = ns_string::from_rust_string(env, lproj);
+        let path = path_for_resource_helper(env, this, name, lproj, directory, extension);
+        release(env, lproj);
+        if path != nil {
+            return path;
+        }
+    }
+    nil
+}
 - (id)pathForResource:(id)name // NSString*
                ofType:(id)extension // NSString*
           inDirectory:(id)directory { // NSString*
@@ -369,11 +423,19 @@ pub const CLASSES: ClassExports = objc_classes! {
 - (id)pathsForResourcesOfType:(id)extension
                   inDirectory:(id)subpath {
     let resource_path: id = msg![env; this resourcePath];
-    let mut dir_path = ns_string::to_rust_string(env, resource_path).into_owned();
-
-    if subpath != nil {
-        let sub = ns_string::to_rust_string(env, subpath);
-        if !sub.is_empty() {
+    let resource_path = ns_string::to_rust_string(env, resource_path).into_owned();
+    let sub = if subpath != nil {
+        ns_string::to_rust_string(env, subpath).into_owned()
+    } else {
+        String::new()
+    };
+    // As on iOS, the current language's resources are listed too.
+    let mut dir_paths = vec![resource_path.clone()];
+    if let Some(lproj) = preferred_lproj(env, &resource_path) {
+        dir_paths.push(format!("{resource_path}/{lproj}"));
+    }
+    if !sub.is_empty() {
+        for dir_path in &mut dir_paths {
             dir_path.push('/');
             dir_path.push_str(&sub);
         }
@@ -393,26 +455,27 @@ pub const CLASSES: ClassExports = objc_classes! {
     };
 
     let mut found_paths: Vec<String> = Vec::new();
-    let guest_path = GuestPath::new(&dir_path);
-
-    match env.fs.enumerate_with_types(guest_path) {
-        Ok(entries) => {
-            for (name, node_type) in entries {
-                if matches!(node_type, FsNodeType::File) {
-                    let keep = match &target_ext {
-                        Some(ext) => name.to_lowercase().ends_with(&format!(".{}", ext)),
-                        None => true,
-                    };
-                    if keep {
-                        let clean_path = format!("{}/{}", dir_path, name).replace("//", "/");
-                        found_paths.push(clean_path);
-                    }
+    let mut read_any = false;
+    for dir_path in &dir_paths {
+        let Ok(entries) = env.fs.enumerate_with_types(GuestPath::new(dir_path)) else {
+            continue;
+        };
+        read_any = true;
+        for (name, node_type) in entries {
+            if matches!(node_type, FsNodeType::File) {
+                let keep = match &target_ext {
+                    Some(ext) => name.to_lowercase().ends_with(&format!(".{}", ext)),
+                    None => true,
+                };
+                if keep {
+                    let clean_path = format!("{}/{}", dir_path, name).replace("//", "/");
+                    found_paths.push(clean_path);
                 }
             }
         }
-        Err(_) => {
-            log!("Failed to read guest directory {:?}", dir_path);
-        }
+    }
+    if !read_any {
+        log!("Failed to read guest directories {:?}", dir_paths);
     }
 
     let array: id = msg_class![env; NSMutableArray new];
@@ -462,6 +525,29 @@ pub const CLASSES: ClassExports = objc_classes! {
 @end
 
 };
+
+/// The `.lproj` folder of the language resources are looked up in first,
+/// like `pathForResource:ofType:inDirectory:` does.
+fn preferred_lproj(env: &mut Environment, resource_path: &str) -> Option<&'static str> {
+    let langs: id = msg_class![env; NSLocale preferredLanguages];
+    let lang_count: NSUInteger = msg![env; langs count];
+    let mut candidates = Vec::new();
+    for i in 0..lang_count {
+        let lang_code: id = msg![env; langs objectAtIndex:i];
+        let lang_code = ns_string::to_rust_string(env, lang_code);
+        if let Some(&(_, lprojs)) = LANG_ID_TO_LANG_PROJ
+            .iter()
+            .find(|&&(code, _)| code == lang_code)
+        {
+            candidates.extend(lprojs);
+        }
+    }
+    candidates.extend(["English.lproj", "en.lproj"]);
+    candidates.into_iter().find(|lproj| {
+        env.fs
+            .is_dir(GuestPath::new(&format!("{resource_path}/{lproj}")))
+    })
+}
 
 fn path_for_resource_helper(
     env: &mut Environment,

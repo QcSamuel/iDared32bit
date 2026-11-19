@@ -11,7 +11,9 @@ use crate::frameworks::core_graphics::cg_bitmap_context::CGBitmapContextDrawer;
 use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::ns_string::{get_static_str, to_rust_string};
 use crate::frameworks::foundation::NSInteger;
-use crate::objc::{autorelease, id, msg, objc_classes, ClassExports, HostObject, NSZonePtr};
+use crate::objc::{
+    autorelease, id, msg, msg_class, nil, objc_classes, ClassExports, HostObject, NSZonePtr,
+};
 use crate::Environment;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -44,6 +46,10 @@ impl State {
                 FontKind::SerifBoldItalic => Font::serif_bold_italic(),
                 FontKind::SerifItalic => Font::serif_italic(),
                 FontKind::MarkerFelt => Font::marker_felt(),
+                FontKind::VerdanaRegular => Font::verdana_regular(),
+                FontKind::VerdanaBold => Font::verdana_bold(),
+                FontKind::VerdanaBoldItalic => Font::verdana_bold_italic(),
+                FontKind::VerdanaItalic => Font::verdana_italic(),
                 FontKind::App(_) => unreachable!(),
             })
     }
@@ -64,6 +70,10 @@ enum FontKind {
     SerifBoldItalic,
     SerifItalic,
     MarkerFelt,
+    VerdanaRegular,
+    VerdanaBold,
+    VerdanaBoldItalic,
+    VerdanaItalic,
     /// A font the app bundles, by its index in `UIAppFonts`.
     App(usize),
 }
@@ -212,6 +222,47 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 };
 
+/// A font family, for fonts picked by style rather than by name.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum FontFamily {
+    Sans,
+    Serif,
+    Mono,
+    Verdana,
+}
+
+/// A `UIFont` of a family and style, as `UIWebView`'s pages use.
+pub fn font_with_style(
+    env: &mut Environment,
+    family: FontFamily,
+    bold: bool,
+    italic: bool,
+    size: CGFloat,
+) -> id {
+    use FontFamily::*;
+    let kind = match (family, bold, italic) {
+        (Sans, false, false) => FontKind::SansRegular,
+        (Sans, true, false) => FontKind::SansBold,
+        (Sans, false, true) => FontKind::SansItalic,
+        (Sans, true, true) => FontKind::SansBoldItalic,
+        (Serif, false, false) => FontKind::SerifRegular,
+        (Serif, true, false) => FontKind::SerifBold,
+        (Serif, false, true) => FontKind::SerifItalic,
+        (Serif, true, true) => FontKind::SerifBoldItalic,
+        (Mono, false, false) => FontKind::MonoRegular,
+        (Mono, true, false) => FontKind::MonoBold,
+        (Mono, false, true) => FontKind::MonoItalic,
+        (Mono, true, true) => FontKind::MonoBoldItalic,
+        (Verdana, false, false) => FontKind::VerdanaRegular,
+        (Verdana, true, false) => FontKind::VerdanaBold,
+        (Verdana, false, true) => FontKind::VerdanaItalic,
+        (Verdana, true, true) => FontKind::VerdanaBoldItalic,
+    };
+    let font: id = msg_class![env; UIFont alloc];
+    *env.objc.borrow_mut::<UIFontHostObject>(font) = UIFontHostObject { size, kind };
+    autorelease(env, font)
+}
+
 /// The font for a name, as for `fontWithName:size:`.
 fn font_kind(env: &mut Environment, name: id) -> FontKind {
     let font_name = to_rust_string(env, name).to_string();
@@ -282,13 +333,13 @@ fn get_font<'a>(state: &'a mut State, kind: FontKind, text: &str) -> &'a Font {
            (0x3400..=0x4DBF).contains(&c) { // more kanji
             match kind {
                 // CJK has no italic equivalent
-                FontKind::MonoRegular | FontKind::MonoItalic | FontKind::SansRegular | FontKind::SansItalic | FontKind::SerifRegular | FontKind::SerifItalic | FontKind::App(_) => {
+                FontKind::MonoRegular | FontKind::MonoItalic | FontKind::SansRegular | FontKind::SansItalic | FontKind::SerifRegular | FontKind::SerifItalic | FontKind::VerdanaRegular | FontKind::VerdanaItalic | FontKind::App(_) => {
                     if state.sans_regular_ja.is_none() {
                         state.sans_regular_ja = Some(Font::sans_regular_ja());
                     }
                     return state.sans_regular_ja.as_ref().unwrap();
                 },
-                FontKind::MonoBold | FontKind::MonoBoldItalic | FontKind::SansBold | FontKind::SansBoldItalic | FontKind::SerifBold | FontKind::SerifBoldItalic => {
+                FontKind::MonoBold | FontKind::MonoBoldItalic | FontKind::SansBold | FontKind::SansBoldItalic | FontKind::SerifBold | FontKind::SerifBoldItalic | FontKind::VerdanaBold | FontKind::VerdanaBoldItalic => {
                     if state.sans_bold_ja.is_none() {
                         state.sans_bold_ja = Some(Font::sans_bold_ja());
                     }
@@ -314,6 +365,13 @@ pub fn size_with_font(
     text: &str,
     constrained: Option<(CGSize, UILineBreakMode)>,
 ) -> CGSize {
+    // As on iOS, a nil font's metrics are all zero, so nothing has a size.
+    if font == nil {
+        return CGSize {
+            width: 0.0,
+            height: 0.0,
+        };
+    }
     let host_object = env.objc.borrow::<UIFontHostObject>(font);
 
     let font = get_font(
@@ -513,8 +571,8 @@ fn get_equivalent_font(system_font: &str) -> Option<FontKind> {
         "Courier-Bold" => None,
         // Font Family: AppleGothic
         "AppleGothic" => None,
-        // Font Family: Arial
-        "ArialMT" => Some(FontKind::SansRegular),
+        // Font Family: Arial (iOS also takes the family name)
+        "Arial" | "ArialMT" => Some(FontKind::SansRegular),
         "Arial-BoldMT" => Some(FontKind::SansBold),
         "Arial-BoldItalicMT" => Some(FontKind::SansBoldItalic),
         "Arial-ItalicMT" => Some(FontKind::SansItalic),
@@ -525,10 +583,10 @@ fn get_equivalent_font(system_font: &str) -> Option<FontKind> {
         "HiraKakuProN-W6" => None,
         "HiraKakuProN-W3" => None,
         // Font Family: Courier New
-        "CourierNewPS-BoldMT" => Some(FontKind::MonoRegular),
-        "CourierNewPS-ItalicMT" => Some(FontKind::MonoBold),
+        "CourierNewPS-BoldMT" => Some(FontKind::MonoBold),
+        "CourierNewPS-ItalicMT" => Some(FontKind::MonoItalic),
         "CourierNewPS-BoldItalicMT" => Some(FontKind::MonoBoldItalic),
-        "CourierNewPSMT" => Some(FontKind::MonoItalic),
+        "CourierNewPSMT" => Some(FontKind::MonoRegular),
         // Font Family: Zapfino
         "Zapfino" => None,
         // Font Family: Arial Unicode MS
@@ -554,10 +612,10 @@ fn get_equivalent_font(system_font: &str) -> Option<FontKind> {
         // Font Family: DB LCD Temp
         "DBLCDTempBlack" => None,
         // Font Family: Verdana
-        "Verdana-Bold" => None,
-        "Verdana-BoldItalic" => None,
-        "Verdana" => None,
-        "Verdana-Italic" => None,
+        "Verdana-Bold" => Some(FontKind::VerdanaBold),
+        "Verdana-BoldItalic" => Some(FontKind::VerdanaBoldItalic),
+        "Verdana" => Some(FontKind::VerdanaRegular),
+        "Verdana-Italic" => Some(FontKind::VerdanaItalic),
         // Font Family: Times New Roman
         "TimesNewRomanPSMT" => Some(FontKind::SerifRegular),
         "TimesNewRomanPS-BoldMT" => Some(FontKind::SerifBold),

@@ -26,6 +26,7 @@ pub mod ns_coder;
 pub mod ns_data;
 pub mod ns_date;
 pub mod ns_date_formatter;
+pub mod ns_decimal_number;
 pub mod ns_dictionary;
 pub mod ns_enumerator;
 pub mod ns_error;
@@ -34,6 +35,7 @@ pub mod ns_file_handle;
 pub mod ns_file_manager;
 pub mod ns_garbage_collector;
 pub mod ns_index_path;
+pub mod ns_index_set;
 pub mod ns_invocation;
 pub mod ns_key_value_observing;
 pub mod ns_keyed_archiver;
@@ -76,6 +78,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         _nib_archive_decoder::CLASSES,
         ns_array::CLASSES,
         ns_assertion_handler::CLASSES,
+        ns_exception::CLASSES,
         ns_autorelease_pool::CLASSES,
         ns_bundle::CLASSES,
         ns_calendar::CLASSES,
@@ -84,6 +87,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         ns_data::CLASSES,
         ns_date::CLASSES,
         ns_date_formatter::CLASSES,
+        ns_decimal_number::CLASSES,
         ns_dictionary::CLASSES,
         ns_enumerator::CLASSES,
         ns_error::CLASSES,
@@ -91,6 +95,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         ns_file_manager::CLASSES,
         ns_garbage_collector::CLASSES,
         ns_index_path::CLASSES,
+        ns_index_set::CLASSES,
         ns_invocation::CLASSES,
         ns_keyed_archiver::CLASSES,
         ns_keyed_unarchiver::CLASSES,
@@ -205,6 +210,24 @@ fn NSStringFromRange(env: &mut Environment, range: NSRange) -> id {
     ns_string::from_rust_string(env, string)
 }
 
+/// As on iOS, ranges that don't meet give {0, 0}, and ones that only touch
+/// give an empty range where they touch.
+fn NSIntersectionRange(_env: &mut Environment, a: NSRange, b: NSRange) -> NSRange {
+    let end = |r: &NSRange| u64::from(r.location) + u64::from(r.length);
+    let location = a.location.max(b.location);
+    let end = end(&a).min(end(&b));
+    if end < u64::from(location) {
+        return NSRange {
+            location: 0,
+            length: 0,
+        };
+    }
+    NSRange {
+        location,
+        length: (end - u64::from(location)) as NSUInteger,
+    }
+}
+
 pub type NSComparisonResult = NSInteger;
 pub const NSOrderedAscending: NSComparisonResult = -1;
 pub const NSOrderedSame: NSComparisonResult = 0;
@@ -230,4 +253,7 @@ fn hash_helper<T: std::hash::Hash>(hashable: &T) -> NSUInteger {
     (hash_u64 as u32) ^ ((hash_u64 >> 32) as u32)
 }
 
-const FUNCTIONS: FunctionExports = &[export_c_func!(NSStringFromRange(_))];
+const FUNCTIONS: FunctionExports = &[
+    export_c_func!(NSStringFromRange(_)),
+    export_c_func!(NSIntersectionRange(_, _)),
+];

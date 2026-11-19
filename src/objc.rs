@@ -24,7 +24,10 @@ use crate::objc::messages::ThreadInitializer;
 use crate::MutexId;
 use std::collections::HashMap;
 
+mod arc;
+mod blocks;
 mod classes;
+mod exceptions;
 mod messages;
 mod methods;
 mod objects;
@@ -32,7 +35,9 @@ mod properties;
 mod selectors;
 mod synchronization;
 
+pub use arc::call_cxx_destructors;
 pub use classes::{objc_classes, Class, ClassExports, ClassTemplate};
+pub use exceptions::objc_exception_throw;
 pub use messages::{
     autorelease, msg, msg_class, msg_send, msg_send_no_initialize, msg_send_no_type_checking,
     msg_send_super2, msg_super, objc_super, release, retain,
@@ -44,8 +49,7 @@ pub use objects::{
 pub use properties::todo_objc_setter;
 pub use selectors::{selector, SEL};
 
-use crate::mem::{ConstVoidPtr, MutPtr};
-use crate::Environment;
+use crate::mem::MutPtr;
 use classes::{
     class_copyPropertyList, class_getInstanceMethod, class_getInstanceSize,
     class_getMethodImplementation, class_getProperty, class_getSuperclass, class_replaceMethod,
@@ -153,6 +157,17 @@ pub struct ObjC {
     /// Type information isn't part of the `objc_msgSend` ABI, so an alternative
     /// channel is needed.
     message_type_info: Option<(std::any::TypeId, &'static str)>,
+
+    /// Numbers each object allocated, so a reused address can be told apart.
+    next_object_serial: u64,
+
+    /// The Objective-C exception type info vtable (see `exceptions`), once
+    /// made.
+    ehtype_vtable: Option<u32>,
+
+    /// Open old-style `@try` frames per thread, innermost last (see
+    /// `exceptions`).
+    legacy_try_frames: HashMap<crate::ThreadId, Vec<crate::mem::MutVoidPtr>>,
 }
 
 impl ObjC {
@@ -167,6 +182,9 @@ impl ObjC {
             metaclass_classes: HashMap::new(),
             cached_guest_functions: HashMap::new(),
             message_type_info: None,
+            next_object_serial: 0,
+            ehtype_vtable: None,
+            legacy_try_frames: HashMap::new(),
         }
     }
 }
@@ -174,9 +192,14 @@ impl ObjC {
 pub const DYLIB: HostDylib = HostDylib {
     path: "/usr/lib/libobjc.A.dylib",
     aliases: &["/usr/lib/libobjc.dylib"],
-    class_exports: &[],
-    constant_exports: &[CONSTANTS],
-    function_exports: &[FUNCTIONS],
+    class_exports: &[blocks::CLASSES],
+    constant_exports: &[CONSTANTS, blocks::CONSTANTS, exceptions::CONSTANTS],
+    function_exports: &[
+        FUNCTIONS,
+        arc::FUNCTIONS,
+        blocks::FUNCTIONS,
+        exceptions::FUNCTIONS,
+    ],
 };
 
 const CONSTANTS: ConstantExports = &[
@@ -186,21 +209,6 @@ const CONSTANTS: ConstantExports = &[
     ("__objc_empty_vtable", HostConstant::NullPtr),
     ("__objc_empty_cache", HostConstant::NullPtr),
 ];
-
-/// Block support is iOS 4+, but it seems like Block Runtime Helpers
-/// could still be called on even if minimal iOS version is set to 3.x?
-///
-/// ref. <https://clang.llvm.org/docs/Block-ABI-Apple.html#runtime-helper-functions>
-fn _Block_object_dispose(_env: &mut Environment, object: ConstVoidPtr, flags: i32) {
-    // `BLOCK_FIELD_IS_BYREF` flag defines an on stack structure holding
-    // the __block variable. It is _probably_ safe to ignore.
-    // TODO: properly implement for block support
-    assert!(flags == 8); // BLOCK_FIELD_IS_BYREF
-    log!(
-        "Warning: Ignoring _Block_object_dispose({:?}, BLOCK_FIELD_IS_BYREF)",
-        object
-    );
-}
 
 const FUNCTIONS: FunctionExports = &[
     export_c_func!(class_getInstanceSize(_)),
@@ -224,5 +232,4 @@ const FUNCTIONS: FunctionExports = &[
     export_c_func!(object_getClass(_)),
     export_c_func!(sel_getName(_)),
     export_c_func!(sel_registerName(_)),
-    export_c_func!(_Block_object_dispose(_, _)),
 ];

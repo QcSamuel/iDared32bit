@@ -14,9 +14,11 @@ use crate::frameworks::core_foundation::cf_allocator::{kCFAllocatorDefault, CFAl
 use crate::frameworks::core_foundation::cf_run_loop::{CFRunLoopMode, CFRunLoopRef};
 use crate::frameworks::core_foundation::time::{CFAbsoluteTime, CFTimeInterval};
 use crate::frameworks::core_foundation::CFIndex;
+use crate::frameworks::foundation::ns_run_loop;
 use crate::mem::{MutPtr, MutVoidPtr, SafeRead};
 use crate::objc::{
-    id, msg, msg_class, nil, objc_classes, Class, ClassExports, HostObject, NSZonePtr,
+    id, msg, msg_class, nil, objc_classes, release, retain, Class, ClassExports, HostObject,
+    NSZonePtr,
 };
 use crate::Environment;
 
@@ -74,11 +76,14 @@ fn CFRunLoopTimerCreate(
     let selector = env.objc.lookup_selector("timerFireMethod:").unwrap();
 
     let repeats = interval > 0.0;
-    msg_class![env; NSTimer timerWithTimeInterval:interval
-                                           target:target
-                                         selector:selector
-                                         userInfo:nil
-                                          repeats:repeats]
+    let timer: id = msg_class![env; NSTimer timerWithTimeInterval:interval
+                                                       target:target
+                                                     selector:selector
+                                                     userInfo:nil
+                                                      repeats:repeats];
+    // The timer keeps the target; the caller owns the timer (Create rule).
+    release(env, target);
+    retain(env, timer)
 }
 
 fn CFRunLoopAddTimer(
@@ -100,10 +105,36 @@ fn CFRunLoopTimerInvalidate(env: &mut Environment, timer: CFRunLoopTimerRef) {
     () = msg![env; timer invalidate];
 }
 
+fn CFRunLoopTimerIsValid(env: &mut Environment, timer: CFRunLoopTimerRef) -> bool {
+    msg![env; timer isValid]
+}
+
+// Timers are only ever in the default mode here (see NSRunLoop addTimer:).
+fn CFRunLoopContainsTimer(
+    env: &mut Environment,
+    run_loop: CFRunLoopRef,
+    timer: CFRunLoopTimerRef,
+    _mode: CFRunLoopMode,
+) -> bool {
+    ns_run_loop::contains_timer(env, run_loop, timer)
+}
+
+fn CFRunLoopRemoveTimer(
+    env: &mut Environment,
+    run_loop: CFRunLoopRef,
+    timer: CFRunLoopTimerRef,
+    _mode: CFRunLoopMode,
+) {
+    ns_run_loop::take_out_timer(env, run_loop, timer);
+}
+
 pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(CFRunLoopTimerCreate(_, _, _, _, _, _, _)),
     export_c_func!(CFRunLoopAddTimer(_, _, _)),
     export_c_func!(CFRunLoopTimerInvalidate(_)),
+    export_c_func!(CFRunLoopTimerIsValid(_)),
+    export_c_func!(CFRunLoopContainsTimer(_, _, _)),
+    export_c_func!(CFRunLoopRemoveTimer(_, _, _)),
 ];
 
 /// Belongs to _touchHLE_CFTimerTarget

@@ -88,7 +88,11 @@ pub const CLASSES: ClassExports = objc_classes! {
     retain(env, object);
     let objects = vec![object];
     let array = from_vec(env, objects);
-    autorelease(env, array)
+    // Mutable when sent to NSMutableArray.
+    let new: id = msg![env; this alloc];
+    let new: id = msg![env; new initWithArray:array];
+    release(env, array);
+    autorelease(env, new)
 }
 + (id)arrayWithObjects:(id)first_obj, ...args {
     let objects = if first_obj == nil {
@@ -114,6 +118,25 @@ pub const CLASSES: ClassExports = objc_classes! {
     let array: id = msg![env; this alloc];
     let array: id = msg![env; array initWithObjects:objects_ptr count:count];
     autorelease(env, array)
+}
+
+- (id)initWithArray:(id)array // NSArray*
+          copyItems:(bool)copy_items {
+    if !copy_items {
+        return msg![env; this initWithArray:array];
+    }
+    // The array holds a copy of each object.
+    let copies: id = msg_class![env; NSMutableArray new];
+    let count: NSUInteger = msg![env; array count];
+    for i in 0..count {
+        let object: id = msg![env; array objectAtIndex:i];
+        let copy: id = msg![env; object copy];
+        () = msg![env; copies addObject:copy];
+        release(env, copy);
+    }
+    let this: id = msg![env; this initWithArray:copies];
+    release(env, copies);
+    this
 }
 
 // These probably comes from some category related to plists.
@@ -754,6 +777,11 @@ pub const CLASSES: ClassExports = objc_classes! {
     retain(env, obj);
     let object = std::mem::replace(&mut env.objc.borrow_mut::<ArrayHostObject>(this).array[index as usize], obj);
     release(env, object);
+}
+
+- (())exchangeObjectAtIndex:(NSUInteger)index1 withObjectAtIndex:(NSUInteger)index2 {
+    let array = &mut env.objc.borrow_mut::<ArrayHostObject>(this).array;
+    array.swap(index1 as usize, index2 as usize);
 }
 
 - (())removeLastObject {

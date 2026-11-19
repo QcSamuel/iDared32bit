@@ -69,9 +69,8 @@ Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/
 ";
 
 const RUST_DESCRIPTION: &str = "
-touchHLE, and therefore this executable, incorporates the following Rust
-libraries, which are copyright their respective authors and other contributors,
-and licensed as follows:
+iDared 32bit incorporates the following Rust libraries, which are copyright
+their respective authors and other contributors, and licensed as follows:
 ";
 
 /// Names, versions, authors and licenses of Rust crates depended on by release
@@ -134,8 +133,8 @@ project.
 ";
 
 const SDL2_DESCRIPTION: &str = "
-touchHLE, and therefore this executable, incorporates the library SDL 2, which
-is available under the following license:
+iDared 32bit incorporates the library SDL 2, which is available under the
+following license:
 ";
 
 const SDL2_LICENSE: &str = "
@@ -157,14 +156,13 @@ freely, subject to the following restrictions:
 ";
 
 const STB_IMAGE: &str = "
-touchHLE, and therefore this executable, incorporates the library stb_image,
-which is available either as Public Domain or under the terms of the MIT
-license.
+iDared 32bit incorporates the library stb_image, which is available either
+as Public Domain or under the terms of the MIT license.
 ";
 
 const PVRTD_DESCRIPTION: &str = "
-touchHLE, and therefore this executable, incorporates PVRTC decompression code
-from the PowerVR SDK, which is available under the following license:
+iDared 32bit incorporates PVRTC decompression code from the PowerVR SDK,
+which is available under the following license:
 ";
 
 const PVRTD_LICENSE: &str = include_str!(concat!(
@@ -178,7 +176,7 @@ const PVRTD_LICENSE: &str = include_str!(concat!(
 const EXTERNAL_FILES_CAVEAT: &str = "
 The following authorship, copyright and license information relates to this
 executable. Please note that different licensing terms apply to the bundled
-dynamic libraries (in dylibs/) and fonts (in touchHLE_fonts/). Please
+dynamic libraries (in dylibs/) and fonts (in fonts/). Please
 consult the respective directories for more information.
 ";
 
@@ -244,6 +242,11 @@ This distribution of iDared 32bit includes Caveat Brush fonts, available under t
 following license:
 ";
 
+const INTERNAL_DEJAVU_FONTS_DESCRIPTION: &str = "
+This distribution of iDared 32bit includes DejaVu Sans fonts, available under the
+following license:
+";
+
 /// The license files read below, embedded for iOS: users can't open the
 /// app bundle, and the files aren't at these paths inside it.
 fn embedded_in_file(path: &str) -> Option<&'static str> {
@@ -259,13 +262,14 @@ fn embedded_in_file(path: &str) -> Option<&'static str> {
         file!("dylibs/README.md"),
         file!("dylibs/COPYING.libz"),
         file!("dylibs/COPYING.libxml2"),
-        file!("touchHLE_fonts/LICENSE.liberation"),
-        file!("touchHLE_fonts/LICENSE.noto"),
-        file!("touchHLE_fonts/LICENSE.caveatbrush"),
+        file!("fonts/LICENSE.liberation"),
+        file!("fonts/LICENSE.noto"),
+        file!("fonts/LICENSE.caveatbrush"),
+        file!("fonts/LICENSE.dejavu"),
     ];
     // The keys are the files' paths in the repository, which differ from
     // the iOS app bundle's for the fonts.
-    let path = path.replacen(crate::paths::FONTS_DIR, "touchHLE_fonts", 1);
+    let path = path.replacen(crate::paths::FONTS_DIR, "fonts", 1);
     FILES
         .iter()
         .find(|&&(p, _)| p == path)
@@ -468,6 +472,13 @@ fn print(out: &mut String, resources_are_external_files: bool) -> Result<(), std
             out,
             "{}",
             read_bundled_file(&format!("{}/LICENSE.caveatbrush", crate::paths::FONTS_DIR))
+        )?;
+        divider(out)?;
+        writeln!(out, "{INTERNAL_DEJAVU_FONTS_DESCRIPTION}")?;
+        writeln!(
+            out,
+            "{}",
+            read_bundled_file(&format!("{}/LICENSE.dejavu", crate::paths::FONTS_DIR))
         )?;
     }
     Ok(())

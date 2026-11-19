@@ -27,6 +27,7 @@ use crate::frameworks::core_graphics::cg_image::{
 };
 use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::ns_string::{self, get_static_str, to_rust_string};
+use crate::frameworks::uikit::ui_view::touchHLE_kCATransactionAnimationBeginsFromCurrentState;
 use crate::mem::{GuestUSize, Ptr};
 use crate::objc::{
     autorelease, id, msg, msg_class, nil, objc_classes, release, retain, todo_objc_setter,
@@ -74,9 +75,9 @@ pub(super) struct CALayerHostObject {
     pub(super) gles_texture_contents: id,
     pub(super) animations: HashMap<String, id>, // CAAnimation*
     pub(super) anonymous_animations: HashSet<id>, // CAAnimation*
-    /// Presentation layer only: a fade transition and how far it's gone (0
-    /// to 1), for the compositor.
-    pub(super) fade_transition: Option<(id, f32)>,
+    /// Presentation layer only: a transition and how far it's gone (0 to 1),
+    /// for the compositor.
+    pub(super) transition: Option<(id, f32)>,
     /// Where `contents` goes in the bounds.
     pub(super) contents_gravity: ContentsGravity,
     /// Whether the contents and sublayers are clipped to the bounds.
@@ -229,7 +230,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         gles_texture_contents: nil,
         animations: HashMap::new(),
         anonymous_animations: HashSet::new(),
-        fade_transition: None,
+        transition: None,
         contents_gravity: ContentsGravity::Resize,
         masks_to_bounds: false,
     });
@@ -315,6 +316,16 @@ pub const CLASSES: ClassExports = objc_classes! {
     sublayers.insert(idx, layer);
 }
 
+- (())insertSublayer:(id)layer above:(id)sibling {
+    retain(env, layer);
+    () = msg![env; layer removeFromSuperlayer];
+    env.objc.borrow_mut::<CALayerHostObject>(layer).superlayer = this;
+
+    let CALayerHostObject { ref mut sublayers, .. } = env.objc.borrow_mut(this);
+    let idx = sublayers.iter().position(|&sublayer| sublayer == sibling).unwrap();
+    sublayers.insert(idx + 1, layer);
+}
+
 - (())removeFromSuperlayer {
     let CALayerHostObject { ref mut superlayer, .. } = env.objc.borrow_mut(this);
     let superlayer = std::mem::take(superlayer);
@@ -387,7 +398,9 @@ pub const CLASSES: ClassExports = objc_classes! {
     let host_object = env.objc.borrow_mut::<CALayerHostObject>(this);
     let old_affine_transform = std::mem::replace(&mut host_object.affine_transform, affine_transform);
     if is_implicit_animation_enabled(env, this) && old_affine_transform != affine_transform {
-        log!("TODO: Implicit animation for affineTransform change from {old_affine_transform:?} to {affine_transform:?}");
+        let old_transform: id = msg_class![env; NSValue valueWithCATransform3D:(CATransform3D::from(old_affine_transform))];
+        let transform: id = msg_class![env; NSValue valueWithCATransform3D:(CATransform3D::from(affine_transform))];
+        add_default_implied_basic_animation(env, this, "transform", old_transform, transform);
     }
 }
 
@@ -841,16 +854,16 @@ fn transform_for_conversion(env: &mut Environment, this: id, other: id) -> CGAff
             other_transform = next_transform;
         }
 
+        // Not in the same tree (e.g. different windows, or not in one yet):
+        // as on iOS, both trees' roots count as the same space.
         if this_superlayer == nil && other_superlayer == nil {
             if need_common_ancestor {
-                panic!("Layers {this:?} and {other:?} have no common ancestor!");
-            } else {
-                break (nil, this_transform, other_transform);
+                log_dbg!("Layers {this:?} and {other:?} have no common ancestor");
             }
+            break (nil, this_transform, other_transform);
         }
     };
 
-    assert!((common_ancestor == nil) != need_common_ancestor);
     if need_common_ancestor {
         log_dbg!("{this:?} and {other:?}'s common ancestor: {common_ancestor:?}",);
     }
@@ -868,11 +881,51 @@ fn add_default_implied_basic_animation(
     from_value: id,
     to_value: id,
 ) {
+    let from_value = if begins_from_current_state(env, layer) {
+        current_value(env, layer, key_path).unwrap_or(from_value)
+    } else {
+        from_value
+    };
     let key_path = get_static_str(env, key_path);
     let animation = msg_class![env; CABasicAnimation animationWithKeyPath:key_path];
     () = msg![env; animation setFromValue: from_value];
     () = msg![env; animation setToValue: to_value];
     ca_transaction::ThreadLocalState::add_animation(env, layer, animation);
+}
+
+/// For `+[UIView setAnimationBeginsFromCurrentState:]`.
+fn begins_from_current_state(env: &mut Environment, layer: id) -> bool {
+    if env.framework_state.uikit.ui_view.animation_block_count == 0 {
+        return false;
+    }
+    let delegate = msg![env; layer delegate];
+    let uiview_class = env.objc.get_known_class("UIView", &mut env.mem);
+    let delegate_is_uiview: bool = msg![env; delegate isKindOfClass:uiview_class];
+    if !delegate_is_uiview {
+        return false;
+    }
+    let key = get_static_str(env, touchHLE_kCATransactionAnimationBeginsFromCurrentState);
+    let value: id = msg_class![env; CATransaction valueForKey:key];
+    value != nil && msg![env; value boolValue]
+}
+
+/// A property's value as it's on screen now, mid-animation. Colours aren't
+/// handled: they start from the old value.
+fn current_value(env: &mut Environment, layer: id, key_path: &str) -> Option<id> {
+    let now = super::animation::State::current_presentation(env, layer);
+    Some(match key_path {
+        "bounds" => msg_class![env; NSValue valueWithCGRect:(now.bounds)],
+        "position" => msg_class![env; NSValue valueWithCGPoint:(now.position)],
+        "anchorPoint" => msg_class![env; NSValue valueWithCGPoint:(now.anchor_point)],
+        "transform" => {
+            let transform = CATransform3D::from(now.affine_transform);
+            msg_class![env; NSValue valueWithCATransform3D:transform]
+        }
+        "hidden" => msg_class![env; NSNumber numberWithBool:(now.hidden)],
+        "opacity" => msg_class![env; NSNumber numberWithFloat:(now.opacity)],
+        "cornerRadius" => msg_class![env; NSNumber numberWithFloat:(now.corner_radius)],
+        _ => return None,
+    })
 }
 
 // TODO: Remove once CAActions are implemented

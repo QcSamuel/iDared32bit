@@ -57,6 +57,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         ui_screen::CLASSES,
         ui_touch::CLASSES,
         ui_view::CLASSES,
+        ui_view::ui_action_sheet::CLASSES,
         ui_view::ui_alert_view::CLASSES,
         ui_view::ui_control::CLASSES,
         ui_view::ui_control::ui_button::CLASSES,
@@ -78,6 +79,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         ui_view::ui_window::CLASSES,
         ui_view_controller::CLASSES,
         ui_view_controller::ui_navigation_controller::CLASSES,
+        ui_view_controller::ui_tab_bar_controller::CLASSES,
     ],
     constant_exports: &[
         ui_application::CONSTANTS,
